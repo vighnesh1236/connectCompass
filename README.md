@@ -41,7 +41,7 @@ The Android client uses HTTPS and does not need a browser CORS origin. Configure
 
 ## Android build and installation
 
-Open the project root in Android Studio and sync Gradle. Configure the Render base URL (include the trailing slash) in the root `gradle.properties` or pass it to Gradle:
+Open the project root in Android Studio and sync Gradle. The app is configured by default for the deployed Render service at `https://connectcompass.onrender.com/`. To override it, configure the base URL (include the trailing slash) in the root `gradle.properties` or pass it to Gradle:
 
 ```properties
 campusConnectApiBaseUrl=https://YOUR-SERVICE.onrender.com/

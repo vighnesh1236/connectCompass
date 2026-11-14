@@ -18,7 +18,7 @@ android {
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         val apiBaseUrl = providers.gradleProperty("campusConnectApiBaseUrl")
-            .orElse("https://your-render-service.onrender.com/")
+            .orElse("https://connectcompass.onrender.com/")
         buildConfigField("String", "API_BASE_URL", "\"${apiBaseUrl.get()}\"")
     }
 
