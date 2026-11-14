@@ -47,13 +47,13 @@ Open the project root in Android Studio and sync Gradle. Configure the Render ba
 campusConnectApiBaseUrl=https://YOUR-SERVICE.onrender.com/
 ```
 
-To build a release APK on Windows:
+To build an installable debug APK on Windows:
 
 ```powershell
-.\gradlew.bat assembleRelease -PcampusConnectApiBaseUrl=https://YOUR-SERVICE.onrender.com/
+.\gradlew.bat assembleDebug -PcampusConnectApiBaseUrl=https://YOUR-SERVICE.onrender.com/
 ```
 
-The APK is written to `app/build/outputs/apk/release/app-release.apk`. Transfer it to an Android device, allow installation from that file source when prompted, then install. A signed APK requires configuring a private release keystore in the local Android build; do not check keystore files or passwords into source control.
+The installable APK is written to `app/build/outputs/apk/debug/app-debug.apk`. Transfer it to an Android device, allow installation from that file source when prompted, then install. `assembleRelease` currently emits an unsigned APK at `app/build/outputs/apk/release/app-release-unsigned.apk`; configure a private release keystore before distributing a signed release. Never check keystores or passwords into source control.
 
 ## API reference
 
