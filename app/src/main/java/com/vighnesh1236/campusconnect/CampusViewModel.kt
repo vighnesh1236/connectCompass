@@ -14,11 +14,18 @@ data class CampusState(
     val assignments: List<Assignment> = emptyList(),
     val students: List<User> = emptyList(),
     val eventRegistrations: List<EventRegistration> = emptyList(),
+    val conversations: List<DirectConversation> = emptyList(),
+    val studentDirectory: List<StudentContact> = emptyList(),
+    val activeConversationId: Int? = null,
+    val directMessages: List<DirectMessage> = emptyList(),
+    val sendingMessage: Boolean = false,
+    val messageSendCount: Int = 0,
     val busy: Boolean = false,
     val authenticated: Boolean = SessionStore.token() != null,
     val restoringSession: Boolean = SessionStore.token() != null,
     val error: String? = null,
-    val info: String? = null
+    val info: String? = null,
+    val loginSuccessCount: Int = 0
 )
 
 class CampusViewModel : ViewModel() {
@@ -48,7 +55,8 @@ class CampusViewModel : ViewModel() {
                 update {
                     copy(
                         user = response.user, authenticated = true, restoringSession = false,
-                        busy = false, info = "Welcome to CampusConnect"
+                        busy = false, info = "Welcome to CampusConnect",
+                        loginSuccessCount = loginSuccessCount + 1
                     )
                 }
                 refresh()
@@ -109,7 +117,92 @@ class CampusViewModel : ViewModel() {
         update { copy(user = updated) }
     }
 
+    fun removeProfilePhoto() = perform("Profile photo removed") {
+        val updated = api.removeProfilePhoto()
+        update { copy(user = updated) }
+    }
+
     fun reportError(message: String) = update { copy(error = message) }
+
+    fun loadMessages() {
+        viewModelScope.launch {
+            try {
+                val conversations = api.conversations()
+                val students = api.studentDirectory()
+                update { copy(conversations = conversations, studentDirectory = students) }
+            } catch (error: Exception) {
+                update { copy(error = errorMessage(error)) }
+            }
+        }
+    }
+
+    fun openConversation(id: Int) {
+        viewModelScope.launch {
+            try {
+                val messages = api.messages(id)
+                update { copy(activeConversationId = id, directMessages = messages) }
+                loadConversations()
+            } catch (error: Exception) {
+                update { copy(error = errorMessage(error)) }
+            }
+        }
+    }
+
+    fun startConversation(studentId: Int) {
+        viewModelScope.launch {
+            try {
+                val conversation = api.startConversation(StartConversationRequest(studentId))
+                val messages = api.messages(conversation.id)
+                val conversations = api.conversations()
+                update {
+                    copy(
+                        activeConversationId = conversation.id, directMessages = messages,
+                        conversations = conversations
+                    )
+                }
+            } catch (error: Exception) {
+                update { copy(error = errorMessage(error)) }
+            }
+        }
+    }
+
+    fun refreshMessages(id: Int) {
+        viewModelScope.launch {
+            try {
+                val messages = api.messages(id)
+                val conversations = api.conversations()
+                update {
+                    if (activeConversationId == id) {
+                        copy(directMessages = messages, conversations = conversations)
+                    } else this
+                }
+            } catch (error: Exception) {
+                update { copy(error = errorMessage(error)) }
+            }
+        }
+    }
+
+    fun sendDirectMessage(id: Int, body: String) {
+        if (body.isBlank() || _state.value.sendingMessage) return
+        viewModelScope.launch {
+            update { copy(sendingMessage = true) }
+            try {
+                val sent = api.sendMessage(id, SendMessageRequest(body.trim()))
+                update {
+                    copy(
+                        directMessages = if (activeConversationId == id) directMessages + sent else directMessages,
+                        sendingMessage = false, messageSendCount = messageSendCount + 1
+                    )
+                }
+                val conversations = api.conversations()
+                update { copy(conversations = conversations) }
+            } catch (error: Exception) {
+                update { copy(sendingMessage = false, error = errorMessage(error)) }
+            }
+        }
+    }
+
+    fun closeConversation() = update { copy(activeConversationId = null, directMessages = emptyList()) }
 
     fun saveAnnouncement(id: Int?, title: String, description: String, category: String) =
         perform("Announcement saved") {
@@ -148,8 +241,23 @@ class CampusViewModel : ViewModel() {
     }
 
     fun logout() {
-        SessionStore.clear()
-        _state.value = CampusState(authenticated = false, restoringSession = false, error = "Signed out")
+        val deviceToken = SessionStore.deviceToken()
+        viewModelScope.launch {
+            var logoutWarning: String? = null
+            if (deviceToken != null) {
+                try {
+                    api.removeDeviceToken(DeviceTokenRequest(deviceToken))
+                } catch (error: Exception) {
+                    logoutWarning = "Signed out, but this device's notification registration could not be removed."
+                    android.util.Log.e("CampusConnect", "Could not unregister notification token at sign-out.", error)
+                }
+            }
+            SessionStore.clear()
+            _state.value = CampusState(
+                authenticated = false, restoringSession = false,
+                error = logoutWarning ?: "Signed out"
+            )
+        }
     }
 
     fun dismissMessages() = update { copy(error = null, info = null) }
@@ -177,6 +285,11 @@ class CampusViewModel : ViewModel() {
 
     private fun update(transform: CampusState.() -> CampusState) {
         _state.value = _state.value.transform()
+    }
+
+    private suspend fun loadConversations() {
+        val conversations = api.conversations()
+        update { copy(conversations = conversations) }
     }
 
     private fun errorMessage(error: Throwable): String {

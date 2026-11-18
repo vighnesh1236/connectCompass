@@ -4,6 +4,7 @@ const cors = require("cors");
 const helmet = require("helmet");
 const rateLimit = require("express-rate-limit");
 const pool = require("./config/database");
+const { isPushConfigured } = require("./services/push");
 const routes = require("./routes");
 
 if (!process.env.JWT_SECRET || process.env.JWT_SECRET.length < 32) {
@@ -29,7 +30,11 @@ app.use("/api/auth", rateLimit({ windowMs: 15 * 60 * 1000, limit: 30 }));
 app.get("/health", async (_req, res, next) => {
   try {
     await pool.query("SELECT 1");
-    res.json({ status: "ok", database: "connected" });
+    res.json({
+      status: "ok",
+      database: "connected",
+      pushNotificationsConfigured: isPushConfigured(),
+    });
   } catch (error) {
     next(error);
   }

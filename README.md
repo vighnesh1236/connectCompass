@@ -1,6 +1,6 @@
 # CampusConnect
 
-CampusConnect is a Kotlin/Jetpack Compose campus companion backed by an Express REST API and PostgreSQL. It includes student registration and sign-in, a student dashboard, announcements, event registration, assignment progress, profile editing, and role-protected admin management.
+CampusConnect is a Kotlin/Jetpack Compose campus companion backed by an Express REST API and PostgreSQL. It includes student registration and sign-in, a student dashboard, announcements, event registration, assignment progress, private student messaging, profile editing, and role-protected admin management.
 
 ## Project layout
 
@@ -33,13 +33,23 @@ UPDATE users SET role = 'admin' WHERE email = 'admin@your-college.edu';
 
 The user must sign in again after promotion to receive an admin JWT. Never expose database credentials or JWT secrets in the Android app.
 
-The app only requests internet access. Profile-photo selection uses Android's system picker and camera app; it does not require SMS, call-log, microphone, location, or broad storage permissions because CampusConnect has no feature that uses them.
+The app requests internet access, camera access (only after the student chooses to take a photo), and Android's notification permission (after sign-in). Choosing an existing profile photo uses Android's system photo picker and does not request broad storage access. Private in-app student messaging does not read or send SMS or place calls, so the app does not request call or SMS permissions.
 
 ## Render deployment
 
 Use the included `render.yaml` Blueprint or create a Render Web Service with **Root Directory** `backend`, **Build Command** `npm install`, and **Start Command** `npm start`. Set `DATABASE_URL` to the Neon connection string. The service runs the repeatable schema migration automatically on startup. Render's health check path is `/health`. The Blueprint generates a `JWT_SECRET`; set `CORS_ORIGINS` only for any browser clients.
 
 The Android client uses HTTPS and does not need a browser CORS origin. Configure the actual Render service URL at build time as described below; this repository does not contain cloud account credentials, so it cannot create or claim a deployed Render service or provision a Neon database.
+
+## Student messages and push notification setup
+
+Student accounts can start private one-to-one chats from the **Messages** tab. Chat history is stored in PostgreSQL. The app requests Android notification permission after sign-in and shows a local sign-in notification; new-chat push alerts require Firebase Cloud Messaging (FCM).
+
+1. Create a Firebase project, add an Android app with application ID `com.vighnesh1236.campusconnect`, and copy its app ID, API key, project ID, and sender/project number into local `gradle.properties` using `campusConnectFirebaseAppId`, `campusConnectFirebaseApiKey`, `campusConnectFirebaseProjectId`, and `campusConnectFirebaseSenderId`. Do not commit Firebase configuration or credentials.
+2. Create a Firebase service account with permission to send FCM messages. Set `FCM_PROJECT_ID` and `FCM_SERVICE_ACCOUNT_JSON` as private Render environment variables; never commit the service-account JSON.
+3. Rebuild and install the app, allow notifications in the Android prompt, then send a message to another student who has also signed in and registered their phone.
+
+Until both the Android Firebase settings and the Render service-account variables are configured, in-app messaging works but background push delivery is not available. If notification permission is denied, enable it under Android **Settings → Apps → CampusConnect → Notifications**.
 
 ## Android build and installation
 
@@ -68,6 +78,11 @@ All routes except `GET /health`, registration, and login require `Authorization:
 | POST | `/api/auth/login` | Public | Sign in (`email`, `password`) |
 | GET, PUT | `/api/students/profile` | Student/admin | View or update name, roll number, department |
 | PUT | `/api/students/profile/photo` | Student/admin | Set or clear a JPEG profile photo (`profilePhoto`, nullable data URL) |
+| DELETE | `/api/students/profile/photo` | Student/admin | Remove the profile photo |
+| GET | `/api/messages/students` | Authenticated student | List students available for a direct chat |
+| GET, POST | `/api/messages/conversations` | Authenticated student | List conversations or start one with `studentId` |
+| GET, POST | `/api/messages/conversations/:id/messages` | Conversation participants | Read messages or send a message (`body`) |
+| PUT, DELETE | `/api/devices/token` | Authenticated user | Register or remove this device's FCM token |
 | GET | `/api/announcements` | Student/admin | List latest announcements first |
 | POST, PUT, DELETE | `/api/announcements[/:id]` | Admin | Create, update, and delete announcements |
 | GET | `/api/events` | Student/admin | List events and this user's registration state |

@@ -1,16 +1,21 @@
 package com.vighnesh1236.campusconnect
 
 import android.os.Bundle
+import android.app.Activity
 import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
+import android.provider.Settings
 import android.util.Base64
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -46,59 +51,139 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.vighnesh1236.campusconnect.data.*
+import kotlinx.coroutines.flow.MutableStateFlow
 import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.text.SimpleDateFormat
 import java.util.Locale
 
-private val Navy = Color(0xFF142044)
-private val NavyLight = Color(0xFF263B70)
-private val Purple = Color(0xFF7657E8)
-private val Cyan = Color(0xFF24B9D7)
-private val Canvas = Color(0xFFF4F7FC)
-private val Ink = Color(0xFF18233D)
-private val Muted = Color(0xFF75809A)
+private data class CampusPalette(
+    val navy: Color,
+    val navyLight: Color,
+    val purple: Color,
+    val cyan: Color,
+    val canvas: Color,
+    val surface: Color,
+    val ink: Color,
+    val muted: Color
+)
+
+private val LightPalette = CampusPalette(
+    Color(0xFF142044), Color(0xFF263B70), Color(0xFF7657E8),
+    Color(0xFF24B9D7), Color(0xFFF4F7FC), Color.White,
+    Color(0xFF18233D), Color(0xFF75809A)
+)
+private val DarkPalette = CampusPalette(
+    Color(0xFF101A34), Color(0xFF263B70), Color(0xFFB7A5FF),
+    Color(0xFF65D8EB), Color(0xFF101522), Color(0xFF1C2537),
+    Color(0xFFE9EDFA), Color(0xFFADB8CE)
+)
+private val LocalPalette = staticCompositionLocalOf { LightPalette }
+private val Navy: Color @Composable get() = LocalPalette.current.navy
+private val NavyLight: Color @Composable get() = LocalPalette.current.navyLight
+private val Purple: Color @Composable get() = LocalPalette.current.purple
+private val Cyan: Color @Composable get() = LocalPalette.current.cyan
+private val Canvas: Color @Composable get() = LocalPalette.current.canvas
+private val SurfaceColor: Color @Composable get() = LocalPalette.current.surface
+private val Ink: Color @Composable get() = LocalPalette.current.ink
+private val Muted: Color @Composable get() = LocalPalette.current.muted
 
 class MainActivity : ComponentActivity() {
+    private val notificationConversationId = MutableStateFlow<Int?>(null)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        SessionStore.initialize(applicationContext)
-        window.statusBarColor = android.graphics.Color.rgb(20, 32, 68)
-        window.navigationBarColor = android.graphics.Color.rgb(244, 247, 252)
-        WindowCompat.getInsetsController(window, window.decorView).apply {
-            isAppearanceLightStatusBars = false
-            isAppearanceLightNavigationBars = true
+        handleNotificationIntent(intent)
+        setContent {
+            val conversationId by notificationConversationId.collectAsState()
+            var darkTheme by remember {
+                mutableStateOf(
+                    getSharedPreferences("campusconnect_preferences", MODE_PRIVATE)
+                        .getBoolean("dark_theme", false)
+                )
+            }
+            SideEffect {
+                window.statusBarColor = android.graphics.Color.parseColor(if (darkTheme) "#101522" else "#142044")
+                window.navigationBarColor = android.graphics.Color.parseColor(if (darkTheme) "#101522" else "#F4F7FC")
+                WindowCompat.getInsetsController(window, window.decorView).apply {
+                    isAppearanceLightStatusBars = false
+                    isAppearanceLightNavigationBars = !darkTheme
+                }
+            }
+            CampusConnectTheme(darkTheme) {
+                CampusConnectApp(
+                    darkTheme = darkTheme,
+                    notificationConversationId = conversationId,
+                    onThemeChange = { enabled ->
+                        darkTheme = enabled
+                        getSharedPreferences("campusconnect_preferences", MODE_PRIVATE)
+                            .edit().putBoolean("dark_theme", enabled).apply()
+                    },
+                    onNotificationConversationHandled = { notificationConversationId.value = null }
+                )
+            }
         }
-        setContent { CampusConnectTheme { CampusConnectApp() } }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleNotificationIntent(intent)
+    }
+
+    private fun handleNotificationIntent(intent: Intent?) {
+        notificationConversationId.value =
+            intent?.getIntExtra(EXTRA_CONVERSATION_ID, 0)?.takeIf { it > 0 }
+    }
+
+    companion object {
+        const val EXTRA_CONVERSATION_ID = "conversation_id"
     }
 }
 
 @Composable
-private fun CampusConnectTheme(content: @Composable () -> Unit) {
+private fun CampusConnectTheme(darkTheme: Boolean, content: @Composable () -> Unit) {
+    val palette = if (darkTheme) DarkPalette else LightPalette
     MaterialTheme(
         colorScheme = lightColorScheme(
-            primary = Navy, secondary = Purple, tertiary = Cyan,
-            background = Canvas, surface = Color.White,
-            onBackground = Ink, onSurface = Ink,
-            error = Color(0xFFB84555)
-        ),
-        typography = Typography(
-            headlineMedium = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Bold),
-            titleLarge = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
-            titleMedium = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold)
-        ),
-        content = content
-    )
+            primary = palette.navy, secondary = palette.purple, tertiary = palette.cyan,
+            background = palette.canvas, surface = palette.surface,
+            onBackground = palette.ink, onSurface = palette.ink,
+            error = Color(0xFFB84555),
+            surfaceVariant = if (darkTheme) Color(0xFF293348) else Color(0xFFE7ECF5),
+            onSurfaceVariant = if (darkTheme) Color(0xFFD0D8EA) else Color(0xFF404B63)
+        )
+    ) {
+        CompositionLocalProvider(LocalPalette provides palette) {
+            MaterialTheme(
+                typography = Typography(
+                    headlineMedium = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Bold),
+                    titleLarge = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+                    titleMedium = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold)
+                ),
+                content = content
+            )
+        }
+    }
 }
 
 private enum class Tab(val title: String) {
-    HOME("Home"), NOTICES("Notices"), EVENTS("Events"), TASKS("Tasks"), PROFILE("Profile")
+    HOME("Home"), NOTICES("Notices"), EVENTS("Events"), TASKS("Tasks"),
+    MESSAGES("Messages"), PROFILE("Profile")
 }
 
 @Composable
-private fun CampusConnectApp(vm: CampusViewModel = viewModel()) {
+private fun CampusConnectApp(
+    darkTheme: Boolean,
+    notificationConversationId: Int?,
+    onThemeChange: (Boolean) -> Unit,
+    onNotificationConversationHandled: () -> Unit,
+    vm: CampusViewModel = viewModel()
+) {
     val state by vm.state.collectAsState()
     val context = LocalContext.current
+    var cameraPermissionDenied by remember { mutableStateOf(false) }
+    var cameraPermanentlyDenied by remember { mutableStateOf(false) }
     val photoPicker = rememberLauncherForActivityResult(
         ActivityResultContracts.PickVisualMedia()
     ) { uri ->
@@ -123,7 +208,51 @@ private fun CampusConnectApp(vm: CampusViewModel = viewModel()) {
             }
         }
     }
+    val cameraPermission = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            cameraPermissionDenied = false
+            camera.launch(null)
+        } else {
+            cameraPermissionDenied = true
+            val requestedBefore = context.getSharedPreferences(
+                "campusconnect_preferences", android.content.Context.MODE_PRIVATE
+            ).getBoolean("camera_permission_requested", false)
+            cameraPermanentlyDenied = requestedBefore &&
+                (context as? Activity)?.shouldShowRequestPermissionRationale(
+                    android.Manifest.permission.CAMERA
+                ) == false
+        }
+    }
+    val notificationPermission = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) CampusNotifications.showLoginNotification(context)
+    }
+    LaunchedEffect(state.loginSuccessCount) {
+        if (state.loginSuccessCount > 0) {
+            if (android.os.Build.VERSION.SDK_INT >= 33 &&
+                ContextCompat.checkSelfPermission(
+                    context, android.Manifest.permission.POST_NOTIFICATIONS
+                ) != PackageManager.PERMISSION_GRANTED
+            ) {
+                notificationPermission.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+            } else {
+                CampusNotifications.showLoginNotification(context)
+            }
+            CampusNotifications.registerDevice(context)
+        }
+    }
     val navController = rememberNavController()
+    LaunchedEffect(notificationConversationId, state.authenticated) {
+        if (notificationConversationId != null && state.authenticated) {
+            navController.navigate(Tab.MESSAGES.name) { launchSingleTop = true }
+            vm.loadMessages()
+            vm.openConversation(notificationConversationId)
+            onNotificationConversationHandled()
+        }
+    }
     val currentEntry by navController.currentBackStackEntryAsState()
     val selectedTab = Tab.values().firstOrNull { it.name == currentEntry?.destination?.route } ?: Tab.HOME
     var selectedAnnouncement by remember { mutableStateOf<Announcement?>(null) }
@@ -143,14 +272,16 @@ private fun CampusConnectApp(vm: CampusViewModel = viewModel()) {
     Scaffold(
         containerColor = Canvas,
         bottomBar = {
-            NavigationBar(containerColor = Color.White, tonalElevation = 12.dp) {
+            NavigationBar(containerColor = SurfaceColor, tonalElevation = 12.dp) {
                 val items = listOf(
                     Tab.HOME to Icons.Rounded.Home,
                     Tab.NOTICES to Icons.Rounded.Campaign,
                     Tab.EVENTS to Icons.Rounded.Event,
                     Tab.TASKS to Icons.Rounded.TaskAlt,
                     Tab.PROFILE to Icons.Rounded.Person
-                )
+                ) + if (state.user?.role == "student") {
+                    listOf(Tab.MESSAGES to Icons.Rounded.Chat)
+                } else emptyList()
                 items.forEach { (item, icon) ->
                     NavigationBarItem(
                         selected = selectedTab == item,
@@ -197,17 +328,50 @@ private fun CampusConnectApp(vm: CampusViewModel = viewModel()) {
                 composable(Tab.TASKS.name) {
                     AssignmentsScreen(state.assignments, state.busy, vm::setAssignmentCompleted)
                 }
+                composable(Tab.MESSAGES.name) {
+                    LaunchedEffect(Unit) { vm.loadMessages() }
+                    MessagesScreen(
+                        state = state,
+                        onRefreshConversations = vm::loadMessages,
+                        onRefreshMessages = vm::refreshMessages,
+                        onOpenConversation = vm::openConversation,
+                        onStartConversation = vm::startConversation,
+                        onSendMessage = vm::sendDirectMessage,
+                        onCloseConversation = vm::closeConversation
+                    )
+                }
                 composable(Tab.PROFILE.name) {
                     ProfileScreen(
                         state, onEdit = { editingProfile = true },
                         onAdmin = { adminOpen = true }, onLogout = vm::logout,
-                        onTakePhoto = { camera.launch(null) },
+                        onTakePhoto = {
+                            when {
+                                ContextCompat.checkSelfPermission(
+                                    context, android.Manifest.permission.CAMERA
+                                ) == PackageManager.PERMISSION_GRANTED -> camera.launch(null)
+                                else -> {
+                                    context.getSharedPreferences(
+                                        "campusconnect_preferences", android.content.Context.MODE_PRIVATE
+                                    ).edit().putBoolean("camera_permission_requested", true).apply()
+                                    cameraPermission.launch(android.Manifest.permission.CAMERA)
+                                }
+                            }
+                        },
                         onChoosePhoto = {
                             photoPicker.launch(
                                 PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
                             )
                         },
-                        onRemovePhoto = { vm.saveProfilePhoto(null) }
+                        onRemovePhoto = vm::removeProfilePhoto,
+                        darkTheme = darkTheme,
+                        onThemeChange = onThemeChange,
+                        onNotificationSettings = {
+                            context.startActivity(
+                                Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
+                                    putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+                                }
+                            )
+                        }
                     )
                 }
             }
@@ -235,6 +399,44 @@ private fun CampusConnectApp(vm: CampusViewModel = viewModel()) {
             vm.saveProfile(name, roll, department)
             editingProfile = false
         }
+    }
+    if (cameraPermissionDenied) {
+        AlertDialog(
+            onDismissRequest = { cameraPermissionDenied = false },
+            title = { Text("Camera permission required") },
+            text = {
+                Text(
+                    if (cameraPermanentlyDenied) {
+                        "Allow camera access in Android Settings to take a profile photo."
+                    } else {
+                        "Allow camera access to take a profile photo. The camera will not open unless you allow it."
+                    }
+                )
+            },
+            confirmButton = {
+                if (cameraPermanentlyDenied) {
+                    TextButton(onClick = {
+                        cameraPermissionDenied = false
+                        context.startActivity(
+                            Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                                data = Uri.fromParts("package", context.packageName, null)
+                            }
+                        )
+                    }) { Text("Open settings") }
+                } else {
+                    TextButton(onClick = {
+                        cameraPermissionDenied = false
+                        context.getSharedPreferences(
+                            "campusconnect_preferences", android.content.Context.MODE_PRIVATE
+                        ).edit().putBoolean("camera_permission_requested", true).apply()
+                        cameraPermission.launch(android.Manifest.permission.CAMERA)
+                    }) { Text("Try again") }
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { cameraPermissionDenied = false }) { Text("Cancel") }
+            }
+        )
     }
     if (adminOpen) {
         AdminScreen(state, vm, onClose = { adminOpen = false })
@@ -300,7 +502,7 @@ private fun AuthScreen(
             Card(
                 Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(28.dp),
-                colors = CardDefaults.cardColors(containerColor = Color.White),
+                colors = CardDefaults.cardColors(containerColor = SurfaceColor),
                 elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
             ) {
                 Column(Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
@@ -412,6 +614,12 @@ private fun HomeScreen(state: CampusState, onNavigate: (Tab) -> Unit, onRefresh:
         item {
             SectionHeading("Latest announcements", "See all", { onNavigate(Tab.NOTICES) })
         }
+        item {
+            QuickAccess(
+                Modifier.fillMaxWidth(), Icons.Rounded.Chat, "Student messages",
+                "Chat privately with classmates", Purple
+            ) { onNavigate(Tab.MESSAGES) }
+        }
         if (state.announcements.isEmpty()) {
             item { EmptyCard("No announcements yet", "New campus updates will show up here.", Icons.Rounded.Campaign) }
         } else {
@@ -452,7 +660,7 @@ private fun DashboardHero(department: String) {
 
 @Composable
 private fun MetricCard(modifier: Modifier, icon: androidx.compose.ui.graphics.vector.ImageVector, value: String, label: String, accent: Color) {
-    Card(modifier, shape = RoundedCornerShape(20.dp), colors = CardDefaults.cardColors(containerColor = Color.White)) {
+    Card(modifier, shape = RoundedCornerShape(20.dp), colors = CardDefaults.cardColors(containerColor = SurfaceColor)) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
             Icon(icon, null, tint = accent, modifier = Modifier.size(23.dp))
             Text(value, style = MaterialTheme.typography.headlineSmall)
@@ -466,7 +674,7 @@ private fun QuickAccess(modifier: Modifier, icon: androidx.compose.ui.graphics.v
     Card(
         modifier.clickable(onClick = onClick),
         shape = RoundedCornerShape(18.dp),
-        colors = CardDefaults.cardColors(containerColor = Color.White)
+        colors = CardDefaults.cardColors(containerColor = SurfaceColor)
     ) {
         Column(Modifier.fillMaxWidth().padding(13.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Box(Modifier.size(35.dp).clip(RoundedCornerShape(11.dp)).background(accent.copy(alpha = .12f)), contentAlignment = Alignment.Center) {
@@ -528,6 +736,203 @@ private fun AssignmentsScreen(assignments: List<Assignment>, busy: Boolean, onCo
 }
 
 @Composable
+private fun MessagesScreen(
+    state: CampusState,
+    onRefreshConversations: () -> Unit,
+    onRefreshMessages: (Int) -> Unit,
+    onOpenConversation: (Int) -> Unit,
+    onStartConversation: (Int) -> Unit,
+    onSendMessage: (Int, String) -> Unit,
+    onCloseConversation: () -> Unit
+) {
+    val conversationId = state.activeConversationId
+    var showingDirectory by remember { mutableStateOf(false) }
+    var draft by remember(conversationId) { mutableStateOf("") }
+    LaunchedEffect(state.messageSendCount) {
+        if (state.messageSendCount > 0) draft = ""
+    }
+    LaunchedEffect(conversationId) {
+        while (conversationId != null) {
+            kotlinx.coroutines.delay(5000)
+            onRefreshMessages(conversationId)
+        }
+    }
+
+    if (conversationId == null) {
+        LazyColumn(
+            Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(20.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            item {
+                Row(
+                    Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Student messages", style = MaterialTheme.typography.headlineSmall)
+                        Text("Private one-to-one chats", color = Muted)
+                    }
+                    IconButton(onClick = { showingDirectory = true }) {
+                        Icon(Icons.Rounded.Edit, "New message", tint = Purple)
+                    }
+                    IconButton(onClick = onRefreshConversations) {
+                        Icon(Icons.Rounded.Refresh, "Refresh", tint = Navy)
+                    }
+                }
+            }
+            if (state.conversations.isEmpty()) {
+                item {
+                    EmptyCard(
+                        "No conversations yet",
+                        "Start a private chat with a student from your campus.",
+                        Icons.Rounded.Chat
+                    )
+                }
+            }
+            items(state.conversations, key = { "conversation-${it.id}" }) { conversation ->
+                Card(
+                    Modifier.fillMaxWidth().clickable { onOpenConversation(conversation.id) },
+                    shape = RoundedCornerShape(17.dp),
+                    colors = CardDefaults.cardColors(containerColor = SurfaceColor)
+                ) {
+                    Row(
+                        Modifier.fillMaxWidth().padding(15.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        ProfileAvatar(
+                            null, conversation.peerName.firstOrNull()?.uppercase() ?: "?",
+                            42.dp, Purple.copy(alpha = .12f), Purple
+                        )
+                        Column(Modifier.weight(1f).padding(start = 12.dp)) {
+                            Text(conversation.peerName, style = MaterialTheme.typography.titleMedium)
+                            Text(
+                                conversation.lastMessage ?: conversation.peerDepartment.orEmpty(),
+                                color = Muted,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        if (conversation.unreadCount > 0) {
+                            StatusPill(
+                                conversation.unreadCount.toString(),
+                                Purple.copy(alpha = .12f),
+                                Purple
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    } else {
+        val conversation = state.conversations.firstOrNull { it.id == conversationId }
+        val contact = state.studentDirectory.firstOrNull { it.id == conversation?.peerUserId }
+        Column(Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 10.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                IconButton(onClick = onCloseConversation) {
+                    Icon(Icons.Rounded.ArrowBack, "Back")
+                }
+                Column {
+                    Text(
+                        conversation?.peerName ?: contact?.name ?: "Student",
+                        style = MaterialTheme.typography.titleLarge
+                    )
+                    Text(
+                        conversation?.peerDepartment ?: contact?.department.orEmpty(),
+                        color = Muted,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+            }
+            LazyColumn(
+                Modifier.weight(1f).fillMaxWidth(),
+                contentPadding = PaddingValues(vertical = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                if (state.directMessages.isEmpty()) {
+                    item { EmptyCard("Say hello", "Your messages here are private between you and this student.", Icons.Rounded.Chat) }
+                }
+                items(state.directMessages, key = { "message-${it.id}" }) { message ->
+                    val mine = message.senderId == SessionStore.userId()
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = if (mine) Arrangement.End else Arrangement.Start
+                    ) {
+                        Card(
+                            colors = CardDefaults.cardColors(
+                                containerColor = if (mine) Purple else SurfaceColor
+                            ),
+                            shape = RoundedCornerShape(17.dp)
+                        ) {
+                            Text(
+                                message.body,
+                                Modifier.widthIn(max = 280.dp).padding(horizontal = 14.dp, vertical = 10.dp),
+                                color = if (mine) Color.White else Ink
+                            )
+                        }
+                    }
+                }
+            }
+            Row(
+                Modifier.fillMaxWidth().padding(bottom = 6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                OutlinedTextField(
+                    value = draft,
+                    onValueChange = { draft = it.take(4000) },
+                    modifier = Modifier.weight(1f),
+                    placeholder = { Text("Write a message") },
+                    maxLines = 4,
+                    shape = RoundedCornerShape(20.dp)
+                )
+                IconButton(
+                    onClick = {
+                        if (draft.isNotBlank()) {
+                            onSendMessage(conversationId, draft)
+                        }
+                    },
+                    enabled = draft.isNotBlank() && !state.sendingMessage
+                ) {
+                    Icon(Icons.Rounded.Send, "Send message", tint = Purple)
+                }
+            }
+        }
+    }
+
+    if (showingDirectory) {
+        AlertDialog(
+            onDismissRequest = { showingDirectory = false },
+            title = { Text("Start a conversation") },
+            text = {
+                if (state.studentDirectory.isEmpty()) {
+                    Text("No other student accounts are available yet.")
+                } else {
+                    LazyColumn(Modifier.heightIn(max = 380.dp)) {
+                        items(state.studentDirectory, key = { "student-${it.id}" }) { student ->
+                            TextButton(
+                                onClick = {
+                                    showingDirectory = false
+                                    onStartConversation(student.id)
+                                },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column(Modifier.fillMaxWidth()) {
+                                    Text(student.name, color = Ink)
+                                    Text(student.department, color = Muted, style = MaterialTheme.typography.bodySmall)
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showingDirectory = false }) { Text("Close") }
+            }
+        )
+    }
+}
+
+@Composable
 private fun ProfileScreen(
     state: CampusState,
     onEdit: () -> Unit,
@@ -535,7 +940,10 @@ private fun ProfileScreen(
     onLogout: () -> Unit,
     onTakePhoto: () -> Unit,
     onChoosePhoto: () -> Unit,
-    onRemovePhoto: () -> Unit
+    onRemovePhoto: () -> Unit,
+    darkTheme: Boolean,
+    onThemeChange: (Boolean) -> Unit,
+    onNotificationSettings: () -> Unit
 ) {
     val user = state.user
     var photoOptionsOpen by remember { mutableStateOf(false) }
@@ -566,7 +974,7 @@ private fun ProfileScreen(
                 }
             }
         }
-        Card(shape = RoundedCornerShape(20.dp), colors = CardDefaults.cardColors(containerColor = Color.White)) {
+        Card(shape = RoundedCornerShape(20.dp), colors = CardDefaults.cardColors(containerColor = SurfaceColor)) {
             Column(Modifier.padding(horizontal = 17.dp)) {
                 ProfileRow(Icons.Rounded.Badge, "Roll number", user?.rollNumber ?: "Not set")
                 HorizontalDivider(color = Canvas)
@@ -579,6 +987,31 @@ private fun ProfileScreen(
         }
         OutlinedButton(onClick = onEdit, modifier = Modifier.fillMaxWidth().height(52.dp), shape = RoundedCornerShape(15.dp)) {
             Icon(Icons.Rounded.Edit, null); Spacer(Modifier.width(8.dp)); Text("Edit profile")
+        }
+        Card(shape = RoundedCornerShape(18.dp), colors = CardDefaults.cardColors(containerColor = SurfaceColor)) {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 7.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    if (darkTheme) Icons.Rounded.DarkMode else Icons.Rounded.LightMode,
+                    null, tint = Purple
+                )
+                Column(Modifier.weight(1f).padding(start = 12.dp)) {
+                    Text(if (darkTheme) "Dark appearance" else "Light appearance")
+                    Text("Choose your app theme", color = Muted, style = MaterialTheme.typography.bodySmall)
+                }
+                Switch(checked = darkTheme, onCheckedChange = onThemeChange)
+            }
+        }
+        OutlinedButton(
+            onClick = onNotificationSettings,
+            modifier = Modifier.fillMaxWidth().height(52.dp),
+            shape = RoundedCornerShape(15.dp)
+        ) {
+            Icon(Icons.Rounded.NotificationsActive, null)
+            Spacer(Modifier.width(8.dp))
+            Text("Notification settings")
         }
         if (user?.role == "admin") {
             Button(onClick = onAdmin, modifier = Modifier.fillMaxWidth().height(52.dp), shape = RoundedCornerShape(15.dp), colors = ButtonDefaults.buttonColors(containerColor = Purple)) {
@@ -862,7 +1295,7 @@ private fun validDate(value: String): Boolean = runCatching {
 
 @Composable
 private fun AdminAction(icon: androidx.compose.ui.graphics.vector.ImageVector, title: String, subtitle: String, color: Color, onClick: () -> Unit) {
-    Card(Modifier.fillMaxWidth().clickable(onClick = onClick), shape = RoundedCornerShape(17.dp), colors = CardDefaults.cardColors(containerColor = Color.White)) {
+    Card(Modifier.fillMaxWidth().clickable(onClick = onClick), shape = RoundedCornerShape(17.dp), colors = CardDefaults.cardColors(containerColor = SurfaceColor)) {
         Row(Modifier.padding(15.dp), verticalAlignment = Alignment.CenterVertically) {
             Box(Modifier.size(44.dp).clip(RoundedCornerShape(13.dp)).background(color.copy(alpha = .12f)), contentAlignment = Alignment.Center) {
                 Icon(icon, null, tint = color)
@@ -878,7 +1311,7 @@ private fun AdminAction(icon: androidx.compose.ui.graphics.vector.ImageVector, t
 
 @Composable
 private fun AdminManagedRow(title: String, subtitle: String, onEdit: () -> Unit, onDelete: () -> Unit) {
-    Card(shape = RoundedCornerShape(17.dp), colors = CardDefaults.cardColors(containerColor = Color.White)) {
+    Card(shape = RoundedCornerShape(17.dp), colors = CardDefaults.cardColors(containerColor = SurfaceColor)) {
         Row(Modifier.fillMaxWidth().padding(start = 15.dp, top = 10.dp, bottom = 10.dp), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text(title, style = MaterialTheme.typography.titleSmall)
@@ -924,7 +1357,7 @@ private fun ProfileEditor(user: User?, onDismiss: () -> Unit, onSave: (String, S
 
 @Composable
 private fun AnnouncementCard(item: Announcement, onClick: () -> Unit) {
-    Card(Modifier.fillMaxWidth().clickable(onClick = onClick), shape = RoundedCornerShape(19.dp), colors = CardDefaults.cardColors(containerColor = Color.White)) {
+    Card(Modifier.fillMaxWidth().clickable(onClick = onClick), shape = RoundedCornerShape(19.dp), colors = CardDefaults.cardColors(containerColor = SurfaceColor)) {
         Row(Modifier.padding(16.dp), verticalAlignment = Alignment.Top) {
             Box(Modifier.size(40.dp).clip(RoundedCornerShape(12.dp)).background(Purple.copy(alpha = .11f)), contentAlignment = Alignment.Center) {
                 Icon(Icons.Rounded.Campaign, null, tint = Purple, modifier = Modifier.size(21.dp))
@@ -946,7 +1379,7 @@ private fun AnnouncementCard(item: Announcement, onClick: () -> Unit) {
 
 @Composable
 private fun EventCard(event: CampusEvent, onClick: () -> Unit, onRegistration: () -> Unit) {
-    Card(shape = RoundedCornerShape(19.dp), colors = CardDefaults.cardColors(containerColor = Color.White)) {
+    Card(shape = RoundedCornerShape(19.dp), colors = CardDefaults.cardColors(containerColor = SurfaceColor)) {
         Column(Modifier.fillMaxWidth().padding(16.dp)) {
             Row(verticalAlignment = Alignment.Top) {
                 Box(Modifier.size(43.dp).clip(RoundedCornerShape(13.dp)).background(Cyan.copy(alpha = .12f)), contentAlignment = Alignment.Center) {
@@ -977,7 +1410,7 @@ private fun EventCard(event: CampusEvent, onClick: () -> Unit, onRegistration: (
 
 @Composable
 private fun AssignmentCard(assignment: Assignment, busy: Boolean, onToggle: () -> Unit) {
-    Card(shape = RoundedCornerShape(18.dp), colors = CardDefaults.cardColors(containerColor = Color.White)) {
+    Card(shape = RoundedCornerShape(18.dp), colors = CardDefaults.cardColors(containerColor = SurfaceColor)) {
         Row(Modifier.fillMaxWidth().padding(15.dp), verticalAlignment = Alignment.CenterVertically) {
             Checkbox(
                 checked = assignment.status == "completed",
@@ -1026,7 +1459,7 @@ private fun StatusPill(label: String, background: Color, foreground: Color) {
 
 @Composable
 private fun EmptyCard(title: String, subtitle: String, icon: androidx.compose.ui.graphics.vector.ImageVector) {
-    Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(20.dp), colors = CardDefaults.cardColors(containerColor = Color.White)) {
+    Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(20.dp), colors = CardDefaults.cardColors(containerColor = SurfaceColor)) {
         Column(Modifier.fillMaxWidth().padding(25.dp), horizontalAlignment = Alignment.CenterHorizontally) {
             Box(Modifier.size(52.dp).clip(CircleShape).background(Purple.copy(alpha = .09f)), contentAlignment = Alignment.Center) {
                 Icon(icon, null, tint = Purple, modifier = Modifier.size(25.dp))
@@ -1051,7 +1484,7 @@ private fun ProfileRow(icon: androidx.compose.ui.graphics.vector.ImageVector, la
 
 @Composable
 private fun SimpleInfoCard(title: String, subtitle: String, icon: androidx.compose.ui.graphics.vector.ImageVector) {
-    Card(shape = RoundedCornerShape(16.dp), colors = CardDefaults.cardColors(containerColor = Color.White)) {
+    Card(shape = RoundedCornerShape(16.dp), colors = CardDefaults.cardColors(containerColor = SurfaceColor)) {
         Row(Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
             Icon(icon, null, tint = Purple)
             Column(Modifier.padding(start = 12.dp)) {

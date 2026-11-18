@@ -3,6 +3,7 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const { z } = require("zod");
 const pool = require("../config/database");
+const { isPushConfigured, sendPush } = require("../services/push");
 const { authenticate, requireAdmin } = require("../middleware/auth");
 const validate = require("../middleware/validate");
 
@@ -47,6 +48,15 @@ const profilePhotoSchema = z.object({
     .regex(/^data:image\/jpeg;base64,[A-Za-z0-9+/]+={0,2}$/)
     .nullable(),
 });
+const directConversationSchema = z.object({
+  studentId: z.number().int().positive(),
+});
+const directMessageSchema = z.object({
+  body: z.string().trim().min(1).max(4000),
+});
+const deviceTokenSchema = z.object({
+  token: z.string().trim().min(20).max(4096),
+});
 
 const publicUser = (row) => ({
   id: Number(row.id),
@@ -61,6 +71,37 @@ const userQuery = "id, name, email, roll_number, department, role";
 const profileUserQuery = `${userQuery}, profile_photo`;
 const asyncRoute = (handler) => (req, res, next) =>
   Promise.resolve(handler(req, res, next)).catch(next);
+const requireStudent = (req, res, next) => {
+  if (req.user.role !== "student") {
+    return res.status(403).json({ message: "Student messaging is only available to student accounts" });
+  }
+  return next();
+};
+const notifyMessageRecipient = async ({ senderId, recipientId, body, conversationId }) => {
+  if (!isPushConfigured()) return;
+  const [{ rows: senders }, { rows: tokens }] = await Promise.all([
+    pool.query("SELECT name FROM users WHERE id = $1", [senderId]),
+    pool.query("SELECT token FROM device_push_tokens WHERE user_id = $1", [recipientId]),
+  ]);
+  const results = await Promise.allSettled(tokens.map(({ token }) =>
+    sendPush(token, {
+      title: "New CampusConnect message",
+      body: `${senders[0]?.name || "A student"}: ${body}`,
+      conversationId,
+    })
+  ));
+  await Promise.all(results.map(async (result, index) => {
+    if (result.status === "rejected") {
+      console.error("Could not send message notification:", result.reason);
+    } else if (result.value === false) {
+      try {
+        await pool.query("DELETE FROM device_push_tokens WHERE token = $1", [tokens[index].token]);
+      } catch (error) {
+        console.error("Could not remove invalid push token:", error);
+      }
+    }
+  }));
+};
 
 router.param("id", (req, res, next, id) => {
   if (!/^[1-9]\d*$/.test(id)) return res.status(400).json({ message: "ID must be a positive integer" });
@@ -136,6 +177,157 @@ router.put("/students/profile/photo", authenticate, validate(profilePhotoSchema)
     );
     if (!rows[0]) return res.status(404).json({ message: "Student not found" });
     res.json(publicUser(rows[0]));
+  }));
+
+router.delete("/students/profile/photo", authenticate, asyncRoute(async (req, res) => {
+  const { rows } = await pool.query(
+    `UPDATE users SET profile_photo = NULL WHERE id = $1
+     RETURNING ${profileUserQuery}`,
+    [req.user.id]
+  );
+  if (!rows[0]) return res.status(404).json({ message: "Student not found" });
+  res.json(publicUser(rows[0]));
+}));
+
+router.get("/messages/students", authenticate, requireStudent, asyncRoute(async (req, res) => {
+  const { rows } = await pool.query(
+    `SELECT id, name, department
+     FROM users WHERE role = 'student' AND id != $1
+     ORDER BY name`,
+    [req.user.id]
+  );
+  res.json(rows.map((row) => ({ ...row, id: Number(row.id) })));
+}));
+
+router.get("/messages/conversations", authenticate, requireStudent, asyncRoute(async (req, res) => {
+  const { rows } = await pool.query(
+    `SELECT c.id, peer.id AS "peerUserId", peer.name AS "peerName",
+       peer.department AS "peerDepartment",
+       latest.body AS "lastMessage", latest.created_at AS "lastMessageAt",
+       (SELECT COUNT(*) FROM direct_messages unread
+        WHERE unread.conversation_id = c.id AND unread.sender_id != $1
+          AND unread.read_at IS NULL) AS "unreadCount"
+     FROM conversations c
+     JOIN users peer ON peer.id = CASE
+       WHEN c.participant_one = $1 THEN c.participant_two ELSE c.participant_one END
+     LEFT JOIN LATERAL (
+       SELECT body, created_at FROM direct_messages
+       WHERE conversation_id = c.id ORDER BY id DESC LIMIT 1
+     ) latest ON TRUE
+     WHERE c.participant_one = $1 OR c.participant_two = $1
+     ORDER BY COALESCE(latest.created_at, c.created_at) DESC`,
+    [req.user.id]
+  );
+  res.json(rows.map((row) => ({
+    ...row, id: Number(row.id), peerUserId: Number(row.peerUserId),
+    unreadCount: Number(row.unreadCount),
+  })));
+}));
+
+router.post("/messages/conversations", authenticate, requireStudent, validate(directConversationSchema),
+  asyncRoute(async (req, res) => {
+    const studentId = req.validatedBody.studentId;
+    if (studentId === Number(req.user.id)) {
+      return res.status(400).json({ message: "You cannot start a conversation with yourself" });
+    }
+    const student = await pool.query(
+      "SELECT id FROM users WHERE id = $1 AND role = 'student'",
+      [studentId]
+    );
+    if (!student.rows[0]) return res.status(404).json({ message: "Student not found" });
+    const first = Math.min(Number(req.user.id), studentId);
+    const second = Math.max(Number(req.user.id), studentId);
+    const { rows } = await pool.query(
+      `INSERT INTO conversations (participant_one, participant_two)
+       VALUES ($1, $2)
+       ON CONFLICT (participant_one, participant_two) DO UPDATE
+         SET participant_one = EXCLUDED.participant_one
+       RETURNING id`,
+      [first, second]
+    );
+    res.status(200).json({ id: Number(rows[0].id) });
+  }));
+
+router.param("conversationId", (req, res, next, id) => {
+  if (!/^[1-9]\d*$/.test(id)) {
+    return res.status(400).json({ message: "Conversation ID must be a positive integer" });
+  }
+  return next();
+});
+
+router.get("/messages/conversations/:conversationId/messages", authenticate,
+  requireStudent,
+  asyncRoute(async (req, res) => {
+    const conversationId = req.params.conversationId;
+    const { rows: conversations } = await pool.query(
+      `SELECT id FROM conversations WHERE id = $1
+       AND (participant_one = $2 OR participant_two = $2)`,
+      [conversationId, req.user.id]
+    );
+    if (!conversations[0]) return res.status(404).json({ message: "Conversation not found" });
+    await pool.query(
+      `UPDATE direct_messages SET read_at = NOW()
+       WHERE conversation_id = $1 AND sender_id != $2 AND read_at IS NULL`,
+      [conversationId, req.user.id]
+    );
+    const { rows } = await pool.query(
+      `SELECT id, sender_id AS "senderId", body, created_at AS "createdAt"
+       FROM (
+         SELECT id, sender_id, body, created_at
+         FROM direct_messages WHERE conversation_id = $1
+         ORDER BY id DESC LIMIT 100
+       ) recent ORDER BY id ASC`,
+      [conversationId]
+    );
+    res.json(rows.map((row) => ({ ...row, id: Number(row.id), senderId: Number(row.senderId) })));
+  }));
+
+router.post("/messages/conversations/:conversationId/messages", authenticate, requireStudent,
+  validate(directMessageSchema), asyncRoute(async (req, res) => {
+    const conversationId = req.params.conversationId;
+    const { rows: conversations } = await pool.query(
+      `SELECT id,
+         CASE WHEN participant_one = $2 THEN participant_two ELSE participant_one END AS recipient_id
+       FROM conversations WHERE id = $1
+         AND (participant_one = $2 OR participant_two = $2)`,
+      [conversationId, req.user.id]
+    );
+    const conversation = conversations[0];
+    if (!conversation) return res.status(404).json({ message: "Conversation not found" });
+    const { rows } = await pool.query(
+      `INSERT INTO direct_messages (conversation_id, sender_id, body)
+       VALUES ($1, $2, $3)
+       RETURNING id, sender_id AS "senderId", body, created_at AS "createdAt"`,
+      [conversationId, req.user.id, req.validatedBody.body]
+    );
+    void notifyMessageRecipient({
+      senderId: req.user.id, recipientId: conversation.recipient_id,
+      body: req.validatedBody.body, conversationId,
+    }).catch((error) => console.error("Could not send message notification:", error));
+    res.status(201).json({
+      ...rows[0], id: Number(rows[0].id), senderId: Number(rows[0].senderId),
+    });
+  }));
+
+router.put("/devices/token", authenticate, validate(deviceTokenSchema),
+  asyncRoute(async (req, res) => {
+    await pool.query(
+      `INSERT INTO device_push_tokens (user_id, token)
+       VALUES ($1, $2)
+       ON CONFLICT (token) DO UPDATE
+         SET user_id = EXCLUDED.user_id, updated_at = NOW()`,
+      [req.user.id, req.validatedBody.token]
+    );
+    res.status(204).end();
+  }));
+
+router.delete("/devices/token", authenticate, validate(deviceTokenSchema),
+  asyncRoute(async (req, res) => {
+    await pool.query(
+      "DELETE FROM device_push_tokens WHERE user_id = $1 AND token = $2",
+      [req.user.id, req.validatedBody.token]
+    );
+    res.status(204).end();
   }));
 
 router.get("/announcements", authenticate, asyncRoute(async (_req, res) => {
