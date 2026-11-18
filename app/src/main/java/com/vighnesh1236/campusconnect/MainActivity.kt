@@ -39,6 +39,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.platform.LocalContext
+import androidx.core.view.WindowCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -64,6 +65,10 @@ class MainActivity : ComponentActivity() {
         SessionStore.initialize(applicationContext)
         window.statusBarColor = android.graphics.Color.rgb(20, 32, 68)
         window.navigationBarColor = android.graphics.Color.rgb(244, 247, 252)
+        WindowCompat.getInsetsController(window, window.decorView).apply {
+            isAppearanceLightStatusBars = false
+            isAppearanceLightNavigationBars = true
+        }
         setContent { CampusConnectTheme { CampusConnectApp() } }
     }
 }

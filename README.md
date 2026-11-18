@@ -90,4 +90,4 @@ For a demonstration, register a student, sign in, browse the live campus feed, r
 
 ## Screenshots
 
-Screenshots are not included because no Android emulator or device capture was available in this workspace. Capture the running app from Android Studio or a physical device for the project presentation.
+Screenshots are not checked in because the connected phone restored a personal account during capture. Capture presentation screenshots with a dedicated test account or emulator.
