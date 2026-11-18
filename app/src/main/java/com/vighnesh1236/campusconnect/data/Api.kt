@@ -32,7 +32,6 @@ data class RegisterRequest(
 )
 data class ProfileRequest(val name: String, val rollNumber: String, val department: String)
 data class ProfilePhotoRequest(val profilePhoto: String?)
-data class DeviceTokenRequest(val token: String)
 data class StudentContact(val id: Int, val name: String, val department: String)
 data class DirectConversation(
     val id: Int,
@@ -118,12 +117,6 @@ interface CampusApi {
     @POST("api/messages/conversations/{id}/messages")
     suspend fun sendMessage(@Path("id") id: Int, @Body body: SendMessageRequest): DirectMessage
 
-    @PUT("api/devices/token")
-    suspend fun registerDeviceToken(@Body body: DeviceTokenRequest)
-
-    @DELETE("api/devices/token")
-    suspend fun removeDeviceToken(@Body body: DeviceTokenRequest)
-
     @GET("api/announcements")
     suspend fun announcements(): List<Announcement>
 
@@ -182,8 +175,6 @@ object SessionStore {
     private const val USER_ID = "user_id"
     private const val USER_NAME = "user_name"
     private const val USER_ROLE = "user_role"
-    private const val DEVICE_TOKEN = "device_token"
-
     private lateinit var preferences: android.content.SharedPreferences
 
     fun initialize(context: Context) {
@@ -208,8 +199,6 @@ object SessionStore {
     fun userName(): String = preferences.getString(USER_NAME, "").orEmpty()
     fun userRole(): String = preferences.getString(USER_ROLE, "student").orEmpty()
     fun userId(): Int = preferences.getInt(USER_ID, 0)
-    fun saveDeviceToken(token: String) = preferences.edit().putString(DEVICE_TOKEN, token).apply()
-    fun deviceToken(): String? = preferences.getString(DEVICE_TOKEN, null)
 }
 
 object ApiClient {

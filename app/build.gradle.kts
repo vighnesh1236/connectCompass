@@ -20,14 +20,6 @@ android {
         val apiBaseUrl = providers.gradleProperty("campusConnectApiBaseUrl")
             .orElse("https://connectcompass.onrender.com/")
         buildConfigField("String", "API_BASE_URL", "\"${apiBaseUrl.get()}\"")
-        val firebaseAppId = providers.gradleProperty("campusConnectFirebaseAppId").orElse("").get()
-        val firebaseApiKey = providers.gradleProperty("campusConnectFirebaseApiKey").orElse("").get()
-        val firebaseProjectId = providers.gradleProperty("campusConnectFirebaseProjectId").orElse("").get()
-        val firebaseSenderId = providers.gradleProperty("campusConnectFirebaseSenderId").orElse("").get()
-        buildConfigField("String", "FIREBASE_APP_ID", "\"$firebaseAppId\"")
-        buildConfigField("String", "FIREBASE_API_KEY", "\"$firebaseApiKey\"")
-        buildConfigField("String", "FIREBASE_PROJECT_ID", "\"$firebaseProjectId\"")
-        buildConfigField("String", "FIREBASE_SENDER_ID", "\"$firebaseSenderId\"")
     }
 
     buildTypes {
@@ -49,8 +41,6 @@ android {
 }
 
 dependencies {
-    implementation(platform("com.google.firebase:firebase-bom:35.2.0"))
-    implementation("com.google.firebase:firebase-messaging")
     implementation(platform("androidx.compose:compose-bom:2025.10.00"))
     implementation("androidx.activity:activity-compose:1.13.0")
     implementation("androidx.compose.ui:ui")

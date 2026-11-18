@@ -241,23 +241,10 @@ class CampusViewModel : ViewModel() {
     }
 
     fun logout() {
-        val deviceToken = SessionStore.deviceToken()
-        viewModelScope.launch {
-            var logoutWarning: String? = null
-            if (deviceToken != null) {
-                try {
-                    api.removeDeviceToken(DeviceTokenRequest(deviceToken))
-                } catch (error: Exception) {
-                    logoutWarning = "Signed out, but this device's notification registration could not be removed."
-                    android.util.Log.e("CampusConnect", "Could not unregister notification token at sign-out.", error)
-                }
-            }
-            SessionStore.clear()
-            _state.value = CampusState(
-                authenticated = false, restoringSession = false,
-                error = logoutWarning ?: "Signed out"
-            )
-        }
+        SessionStore.clear()
+        _state.value = CampusState(
+            authenticated = false, restoringSession = false, error = "Signed out"
+        )
     }
 
     fun dismissMessages() = update { copy(error = null, info = null) }

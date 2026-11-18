@@ -3,7 +3,9 @@
   "version": "1.0.0",
   "private": true,
   "description": "REST API for CampusConnect",
-  "engines": { "node": ">=20" },
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "prestart": "npm run migrate",
     "start": "node server.js",
@@ -19,6 +21,7 @@
     "helmet": "^8.0.0",
     "jsonwebtoken": "^9.0.2",
     "pg": "^8.13.1",
+    "ws": "^8.23.0",
     "zod": "^4.6.7"
   }
 }

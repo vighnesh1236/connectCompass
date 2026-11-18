@@ -3,7 +3,7 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const { z } = require("zod");
 const pool = require("../config/database");
-const { isPushConfigured, sendPush } = require("../services/push");
+const { notifyUser } = require("../services/realtime");
 const { authenticate, requireAdmin } = require("../middleware/auth");
 const validate = require("../middleware/validate");
 
@@ -54,9 +54,6 @@ const directConversationSchema = z.object({
 const directMessageSchema = z.object({
   body: z.string().trim().min(1).max(4000),
 });
-const deviceTokenSchema = z.object({
-  token: z.string().trim().min(20).max(4096),
-});
 
 const publicUser = (row) => ({
   id: Number(row.id),
@@ -77,32 +74,6 @@ const requireStudent = (req, res, next) => {
   }
   return next();
 };
-const notifyMessageRecipient = async ({ senderId, recipientId, body, conversationId }) => {
-  if (!isPushConfigured()) return;
-  const [{ rows: senders }, { rows: tokens }] = await Promise.all([
-    pool.query("SELECT name FROM users WHERE id = $1", [senderId]),
-    pool.query("SELECT token FROM device_push_tokens WHERE user_id = $1", [recipientId]),
-  ]);
-  const results = await Promise.allSettled(tokens.map(({ token }) =>
-    sendPush(token, {
-      title: "New CampusConnect message",
-      body: `${senders[0]?.name || "A student"}: ${body}`,
-      conversationId,
-    })
-  ));
-  await Promise.all(results.map(async (result, index) => {
-    if (result.status === "rejected") {
-      console.error("Could not send message notification:", result.reason);
-    } else if (result.value === false) {
-      try {
-        await pool.query("DELETE FROM device_push_tokens WHERE token = $1", [tokens[index].token]);
-      } catch (error) {
-        console.error("Could not remove invalid push token:", error);
-      }
-    }
-  }));
-};
-
 router.param("id", (req, res, next, id) => {
   if (!/^[1-9]\d*$/.test(id)) return res.status(400).json({ message: "ID must be a positive integer" });
   return next();
@@ -286,9 +257,10 @@ router.post("/messages/conversations/:conversationId/messages", authenticate, re
   validate(directMessageSchema), asyncRoute(async (req, res) => {
     const conversationId = req.params.conversationId;
     const { rows: conversations } = await pool.query(
-      `SELECT id,
-         CASE WHEN participant_one = $2 THEN participant_two ELSE participant_one END AS recipient_id
-       FROM conversations WHERE id = $1
+      `SELECT c.id, sender.name AS sender_name,
+         CASE WHEN c.participant_one = $2 THEN c.participant_two ELSE c.participant_one END AS recipient_id
+       FROM conversations c JOIN users sender ON sender.id = $2
+       WHERE c.id = $1
          AND (participant_one = $2 OR participant_two = $2)`,
       [conversationId, req.user.id]
     );
@@ -300,34 +272,16 @@ router.post("/messages/conversations/:conversationId/messages", authenticate, re
        RETURNING id, sender_id AS "senderId", body, created_at AS "createdAt"`,
       [conversationId, req.user.id, req.validatedBody.body]
     );
-    void notifyMessageRecipient({
-      senderId: req.user.id, recipientId: conversation.recipient_id,
-      body: req.validatedBody.body, conversationId,
-    }).catch((error) => console.error("Could not send message notification:", error));
+    void notifyUser(Number(conversation.recipient_id), {
+      type: "message",
+      messageId: Number(rows[0].id),
+      title: "New CampusConnect message",
+      body: `${conversation.sender_name}: ${req.validatedBody.body}`.slice(0, 1000),
+      conversationId: Number(conversationId),
+    });
     res.status(201).json({
       ...rows[0], id: Number(rows[0].id), senderId: Number(rows[0].senderId),
     });
-  }));
-
-router.put("/devices/token", authenticate, validate(deviceTokenSchema),
-  asyncRoute(async (req, res) => {
-    await pool.query(
-      `INSERT INTO device_push_tokens (user_id, token)
-       VALUES ($1, $2)
-       ON CONFLICT (token) DO UPDATE
-         SET user_id = EXCLUDED.user_id, updated_at = NOW()`,
-      [req.user.id, req.validatedBody.token]
-    );
-    res.status(204).end();
-  }));
-
-router.delete("/devices/token", authenticate, validate(deviceTokenSchema),
-  asyncRoute(async (req, res) => {
-    await pool.query(
-      "DELETE FROM device_push_tokens WHERE user_id = $1 AND token = $2",
-      [req.user.id, req.validatedBody.token]
-    );
-    res.status(204).end();
   }));
 
 router.get("/announcements", authenticate, asyncRoute(async (_req, res) => {

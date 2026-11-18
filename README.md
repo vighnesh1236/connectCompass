@@ -41,15 +41,9 @@ Use the included `render.yaml` Blueprint or create a Render Web Service with **R
 
 The Android client uses HTTPS and does not need a browser CORS origin. Configure the actual Render service URL at build time as described below; this repository does not contain cloud account credentials, so it cannot create or claim a deployed Render service or provision a Neon database.
 
-## Student messages and push notification setup
+## Student messages and background notifications
 
-Student accounts can start private one-to-one chats from the **Messages** tab. Chat history is stored in PostgreSQL. The app requests Android notification permission after sign-in and shows a local sign-in notification; new-chat push alerts require Firebase Cloud Messaging (FCM).
-
-1. Create a Firebase project, add an Android app with application ID `com.vighnesh1236.campusconnect`, and copy its app ID, API key, project ID, and sender/project number into local `gradle.properties` using `campusConnectFirebaseAppId`, `campusConnectFirebaseApiKey`, `campusConnectFirebaseProjectId`, and `campusConnectFirebaseSenderId`. Do not commit Firebase configuration or credentials.
-2. Create a Firebase service account with permission to send FCM messages. Set `FCM_PROJECT_ID` and `FCM_SERVICE_ACCOUNT_JSON` as private Render environment variables; never commit the service-account JSON.
-3. Rebuild and install the app, allow notifications in the Android prompt, then send a message to another student who has also signed in and registered their phone.
-
-Until both the Android Firebase settings and the Render service-account variables are configured, in-app messaging works but background push delivery is not available. If notification permission is denied, enable it under Android **Settings → Apps → CampusConnect → Notifications**.
+Student accounts can start private one-to-one chats from the **Messages** tab. Chat history is stored in PostgreSQL. After sign-in, allow notifications so the app can keep a self-hosted WebSocket connection in an Android foreground service; incoming messages then produce phone notifications without Firebase or another push provider. Android displays an ongoing “CampusConnect is connected” notification while this service runs, and the connection resumes after a device restart when notifications remain enabled. This persistent connection uses battery; Android Doze or manufacturer battery-saving settings may delay alerts, and force-stopping the app disconnects it. If notifications are denied, enable them under Android **Settings → Apps → CampusConnect → Notifications**.
 
 ## Android build and installation
 
@@ -82,7 +76,7 @@ All routes except `GET /health`, registration, and login require `Authorization:
 | GET | `/api/messages/students` | Authenticated student | List students available for a direct chat |
 | GET, POST | `/api/messages/conversations` | Authenticated student | List conversations or start one with `studentId` |
 | GET, POST | `/api/messages/conversations/:id/messages` | Conversation participants | Read messages or send a message (`body`) |
-| PUT, DELETE | `/api/devices/token` | Authenticated user | Register or remove this device's FCM token |
+| WebSocket | `/api/messages/live` | Authenticated student | Receive live notifications (send a JSON `authenticate` message with the JWT after connecting) |
 | GET | `/api/announcements` | Student/admin | List latest announcements first |
 | POST, PUT, DELETE | `/api/announcements[/:id]` | Admin | Create, update, and delete announcements |
 | GET | `/api/events` | Student/admin | List events and this user's registration state |
@@ -99,7 +93,7 @@ All routes except `GET /health`, registration, and login require `Authorization:
 
 ## Architecture and project demonstration
 
-The Android UI is composed in Material 3. `CampusViewModel` owns screen state and performs coroutine-based API operations; `ApiClient` configures Retrofit and attaches the session's encrypted JWT. Profile photos are resized/compressed on-device and stored with the user's PostgreSQL profile. The app uses Android's system photo picker and camera app for profile photos, so it does not need broad photo-library or storage access. The Express routes validate request bodies, hash passwords with bcrypt, verify JWTs, enforce admin roles, and use parameterized PostgreSQL statements. The schema defines foreign keys and unique constraints for email, roll numbers, event registrations, and per-student assignment status.
+The Android UI is composed in Material 3. `CampusViewModel` owns screen state and performs coroutine-based API operations; `ApiClient` configures Retrofit and attaches the session's encrypted JWT. The foreground messaging service reconnects to the authenticated WebSocket endpoint for background alerts, without requiring Firebase; Android shows a persistent notification while this connection is active. Profile photos are resized/compressed on-device and stored with the user's PostgreSQL profile. The app uses Android's system photo picker and camera app for profile photos, so it does not need broad photo-library or storage access. The Express routes validate request bodies, hash passwords with bcrypt, verify JWTs, enforce admin roles, and use parameterized PostgreSQL statements. The schema defines foreign keys and unique constraints for email, roll numbers, event registrations, and per-student assignment status.
 
 For a demonstration, register a student, sign in, browse the live campus feed, register for an event, and mark an assignment complete. Promote a separate account to admin in Neon, sign in again, and use the Admin studio to publish announcements/events/assignments and inspect student accounts and event registrations.
 

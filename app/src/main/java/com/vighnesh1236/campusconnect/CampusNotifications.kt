@@ -1,6 +1,7 @@
 package com.vighnesh1236.campusconnect
 
 import android.Manifest
+import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
@@ -8,68 +9,74 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
-import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import android.R as AndroidR
-import com.google.firebase.FirebaseApp
-import com.google.firebase.FirebaseOptions
-import com.google.firebase.messaging.FirebaseMessaging
-import com.google.firebase.messaging.FirebaseMessagingService
-import com.google.firebase.messaging.RemoteMessage
-import com.vighnesh1236.campusconnect.data.ApiClient
-import com.vighnesh1236.campusconnect.data.DeviceTokenRequest
-import com.vighnesh1236.campusconnect.data.SessionStore
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.launch
 
 object CampusNotifications {
     const val CHANNEL_ID = "campusconnect_messages"
-    private const val TAG = "CampusNotifications"
-    private const val NOTIFICATION_ID = 2841
+    const val CONNECTION_CHANNEL_ID = "campusconnect_connection"
+    const val CONNECTION_NOTIFICATION_ID = 2840
+    private const val LOGIN_NOTIFICATION_ID = 2841
 
     fun initialize(context: Context) {
-        createChannel(context)
-        if (BuildConfig.FIREBASE_APP_ID.isBlank() ||
-            BuildConfig.FIREBASE_API_KEY.isBlank() ||
-            BuildConfig.FIREBASE_PROJECT_ID.isBlank() ||
-            BuildConfig.FIREBASE_SENDER_ID.isBlank()
-        ) {
-            Log.i(TAG, "Push notifications are disabled until Firebase client settings are configured.")
-            return
-        }
-        if (FirebaseApp.getApps(context).isEmpty()) {
-            FirebaseApp.initializeApp(
-                context,
-                FirebaseOptions.Builder()
-                    .setApplicationId(BuildConfig.FIREBASE_APP_ID)
-                    .setApiKey(BuildConfig.FIREBASE_API_KEY)
-                    .setProjectId(BuildConfig.FIREBASE_PROJECT_ID)
-                    .setGcmSenderId(BuildConfig.FIREBASE_SENDER_ID)
-                    .build()
-            )
-        }
+        if (Build.VERSION.SDK_INT < 26) return
+        val manager = context.getSystemService(NotificationManager::class.java)
+        manager.createNotificationChannel(
+            NotificationChannel(
+                CHANNEL_ID, "CampusConnect messages", NotificationManager.IMPORTANCE_HIGH
+            ).apply {
+                description = "New messages from other students and account activity"
+            }
+        )
+        manager.createNotificationChannel(
+            NotificationChannel(
+                CONNECTION_CHANNEL_ID, "Message connection", NotificationManager.IMPORTANCE_LOW
+            ).apply {
+                description = "Keeps CampusConnect ready to receive student messages"
+                setShowBadge(false)
+            }
+        )
     }
 
-    fun registerDevice(context: Context) {
-        if (FirebaseApp.getApps(context).isEmpty() || SessionStore.token().isNullOrBlank()) return
-        FirebaseMessaging.getInstance().token
-            .addOnSuccessListener { token -> uploadDeviceToken(token) }
-            .addOnFailureListener { error -> Log.e(TAG, "Could not obtain an FCM registration token.", error) }
-    }
+    fun notificationsAllowed(context: Context): Boolean =
+        NotificationManagerCompat.from(context).areNotificationsEnabled() &&
+            (Build.VERSION.SDK_INT < 33 ||
+                ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) ==
+                PackageManager.PERMISSION_GRANTED)
 
     fun showLoginNotification(context: Context) {
-        show(context, NOTIFICATION_ID, "You're connected", "Welcome to your campus community.")
+        show(context, LOGIN_NOTIFICATION_ID, "You're connected", "Welcome to your campus community.")
     }
 
-    fun showMessageNotification(context: Context, title: String, body: String, conversationId: String?) {
+    fun showMessageNotification(
+        context: Context, title: String, body: String,
+        conversationId: Int?, messageId: Int?
+    ) {
         show(
-            context, (conversationId?.hashCode() ?: 0) and Int.MAX_VALUE,
-            title, body, conversationId
+            context, messageId ?: conversationId ?: 0, title, body, conversationId
         )
+    }
+
+    fun connectionNotification(context: Context, connected: Boolean): Notification {
+        val intent = PendingIntent.getActivity(
+            context, CONNECTION_NOTIFICATION_ID,
+            Intent(context, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
+            },
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        return NotificationCompat.Builder(context, CONNECTION_CHANNEL_ID)
+            .setSmallIcon(AndroidR.drawable.ic_dialog_email)
+            .setContentTitle(if (connected) "CampusConnect is connected" else "CampusConnect is reconnecting")
+            .setContentText("Background student message alerts are on")
+            .setContentIntent(intent)
+            .setOngoing(true)
+            .setOnlyAlertOnce(true)
+            .setCategory(NotificationCompat.CATEGORY_SERVICE)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .build()
     }
 
     private fun show(
@@ -77,17 +84,12 @@ object CampusNotifications {
         id: Int,
         title: String,
         body: String,
-        conversationId: String? = null
+        conversationId: Int? = null
     ) {
-        if (Build.VERSION.SDK_INT >= 33 &&
-            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
-            PackageManager.PERMISSION_GRANTED
-        ) return
-        if (!NotificationManagerCompat.from(context).areNotificationsEnabled()) return
-
+        if (!notificationsAllowed(context)) return
         val intent = Intent(context, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
-            conversationId?.toIntOrNull()?.let { putExtra(MainActivity.EXTRA_CONVERSATION_ID, it) }
+            conversationId?.let { putExtra(MainActivity.EXTRA_CONVERSATION_ID, it) }
         }
         val pendingIntent = PendingIntent.getActivity(
             context, id, intent,
@@ -103,42 +105,5 @@ object CampusNotifications {
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .build()
         NotificationManagerCompat.from(context).notify(id, notification)
-    }
-
-    private fun createChannel(context: Context) {
-        if (Build.VERSION.SDK_INT >= 26) {
-            val channel = NotificationChannel(
-                CHANNEL_ID, "CampusConnect messages", NotificationManager.IMPORTANCE_HIGH
-            ).apply {
-                description = "New messages from other students and account activity"
-            }
-            context.getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
-        }
-    }
-
-    internal fun uploadDeviceToken(token: String) {
-        if (SessionStore.token().isNullOrBlank()) return
-        SessionStore.saveDeviceToken(token)
-        CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
-            try {
-                ApiClient.create().registerDeviceToken(DeviceTokenRequest(token))
-            } catch (error: Exception) {
-                Log.e(TAG, "Could not register the push notification token.", error)
-            }
-        }
-    }
-}
-
-class CampusFirebaseMessagingService : FirebaseMessagingService() {
-    override fun onNewToken(token: String) {
-        CampusNotifications.uploadDeviceToken(token)
-    }
-
-    override fun onMessageReceived(message: RemoteMessage) {
-        val title = message.data["title"] ?: message.notification?.title ?: "New message"
-        val body = message.data["body"] ?: message.notification?.body.orEmpty()
-        CampusNotifications.showMessageNotification(
-            this, title, body, message.data["conversationId"]
-        )
     }
 }

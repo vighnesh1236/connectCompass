@@ -131,6 +131,17 @@ class MainActivity : ComponentActivity() {
         handleNotificationIntent(intent)
     }
 
+    override fun onResume() {
+        super.onResume()
+        if (SessionStore.token() != null) {
+            if (CampusNotifications.notificationsAllowed(this)) {
+                CampusMessagingService.ensureRunning(this)
+            } else {
+                CampusMessagingService.stop(this)
+            }
+        }
+    }
+
     private fun handleNotificationIntent(intent: Intent?) {
         notificationConversationId.value =
             intent?.getIntExtra(EXTRA_CONVERSATION_ID, 0)?.takeIf { it > 0 }
@@ -228,7 +239,10 @@ private fun CampusConnectApp(
     val notificationPermission = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
-        if (granted) CampusNotifications.showLoginNotification(context)
+        if (granted) {
+            CampusNotifications.showLoginNotification(context)
+            CampusMessagingService.ensureRunning(context)
+        }
     }
     LaunchedEffect(state.loginSuccessCount) {
         if (state.loginSuccessCount > 0) {
@@ -240,8 +254,8 @@ private fun CampusConnectApp(
                 notificationPermission.launch(android.Manifest.permission.POST_NOTIFICATIONS)
             } else {
                 CampusNotifications.showLoginNotification(context)
+                CampusMessagingService.ensureRunning(context)
             }
-            CampusNotifications.registerDevice(context)
         }
     }
     val navController = rememberNavController()
@@ -343,7 +357,8 @@ private fun CampusConnectApp(
                 composable(Tab.PROFILE.name) {
                     ProfileScreen(
                         state, onEdit = { editingProfile = true },
-                        onAdmin = { adminOpen = true }, onLogout = vm::logout,
+                        onAdmin = { adminOpen = true },
+                        onLogout = { CampusMessagingService.stop(context); vm.logout() },
                         onTakePhoto = {
                             when {
                                 ContextCompat.checkSelfPermission(

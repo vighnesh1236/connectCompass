@@ -3,8 +3,9 @@ const express = require("express");
 const cors = require("cors");
 const helmet = require("helmet");
 const rateLimit = require("express-rate-limit");
+const http = require("node:http");
 const pool = require("./config/database");
-const { isPushConfigured } = require("./services/push");
+const { attachMessaging, closeMessaging } = require("./services/realtime");
 const routes = require("./routes");
 
 if (!process.env.JWT_SECRET || process.env.JWT_SECRET.length < 32) {
@@ -30,11 +31,7 @@ app.use("/api/auth", rateLimit({ windowMs: 15 * 60 * 1000, limit: 30 }));
 app.get("/health", async (_req, res, next) => {
   try {
     await pool.query("SELECT 1");
-    res.json({
-      status: "ok",
-      database: "connected",
-      pushNotificationsConfigured: isPushConfigured(),
-    });
+    res.json({ status: "ok", database: "connected", backgroundMessaging: "websocket" });
   } catch (error) {
     next(error);
   }
@@ -53,9 +50,12 @@ app.use((error, _req, res, _next) => {
 });
 
 const port = Number(process.env.PORT || 3000);
-const server = app.listen(port, () => console.log(`CampusConnect API listening on ${port}`));
+const server = http.createServer(app);
+attachMessaging(server);
+server.listen(port, () => console.log(`CampusConnect API listening on ${port}`));
 
 async function shutdown() {
+  closeMessaging();
   server.close(async () => {
     await pool.end();
     process.exit(0);
