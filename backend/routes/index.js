@@ -41,6 +41,12 @@ const profileSchema = z.object({
   rollNumber: z.string().trim().min(1).max(50),
   department: z.string().trim().min(2).max(120),
 });
+const profilePhotoSchema = z.object({
+  profilePhoto: z.string()
+    .max(700_000)
+    .regex(/^data:image\/jpeg;base64,[A-Za-z0-9+/]+={0,2}$/)
+    .nullable(),
+});
 
 const publicUser = (row) => ({
   id: Number(row.id),
@@ -49,8 +55,10 @@ const publicUser = (row) => ({
   rollNumber: row.roll_number,
   department: row.department,
   role: row.role,
+  ...(Object.hasOwn(row, "profile_photo") ? { profilePhoto: row.profile_photo } : {}),
 });
 const userQuery = "id, name, email, roll_number, department, role";
+const profileUserQuery = `${userQuery}, profile_photo`;
 const asyncRoute = (handler) => (req, res, next) =>
   Promise.resolve(handler(req, res, next)).catch(next);
 
@@ -98,7 +106,7 @@ router.post("/auth/login", validate(loginSchema), asyncRoute(async (req, res) =>
 }));
 
 router.get("/students/profile", authenticate, asyncRoute(async (req, res) => {
-  const { rows } = await pool.query(`SELECT ${userQuery} FROM users WHERE id = $1`, [req.user.id]);
+  const { rows } = await pool.query(`SELECT ${profileUserQuery} FROM users WHERE id = $1`, [req.user.id]);
   if (!rows[0]) return res.status(404).json({ message: "Student not found" });
   res.json(publicUser(rows[0]));
 }));
@@ -108,7 +116,7 @@ router.put("/students/profile", authenticate, validate(profileSchema), asyncRout
   try {
     const { rows } = await pool.query(
       `UPDATE users SET name = $1, roll_number = $2, department = $3
-       WHERE id = $4 RETURNING ${userQuery}`,
+       WHERE id = $4 RETURNING ${profileUserQuery}`,
       [name, rollNumber, department, req.user.id]
     );
     if (!rows[0]) return res.status(404).json({ message: "Student not found" });
@@ -118,6 +126,17 @@ router.put("/students/profile", authenticate, validate(profileSchema), asyncRout
     throw error;
   }
 }));
+
+router.put("/students/profile/photo", authenticate, validate(profilePhotoSchema),
+  asyncRoute(async (req, res) => {
+    const { rows } = await pool.query(
+      `UPDATE users SET profile_photo = $1 WHERE id = $2
+       RETURNING ${profileUserQuery}`,
+      [req.validatedBody.profilePhoto, req.user.id]
+    );
+    if (!rows[0]) return res.status(404).json({ message: "Student not found" });
+    res.json(publicUser(rows[0]));
+  }));
 
 router.get("/announcements", authenticate, asyncRoute(async (_req, res) => {
   const { rows } = await pool.query(

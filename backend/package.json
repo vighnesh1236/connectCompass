@@ -5,6 +5,7 @@
   "description": "REST API for CampusConnect",
   "engines": { "node": ">=20" },
   "scripts": {
+    "prestart": "npm run migrate",
     "start": "node server.js",
     "dev": "node --watch server.js",
     "migrate": "node database/migrate.js"

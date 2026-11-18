@@ -23,7 +23,7 @@ README.md            Setup, deployment, and API reference
    npm run dev
    ```
 
-4. `GET http://localhost:3000/health` reports API and database connectivity. Migrations are repeatable and may also be run with `npm run migrate` after deployment.
+4. `GET http://localhost:3000/health` reports API and database connectivity. Migrations are repeatable; `npm start` runs them automatically before starting the API, and `npm run migrate` can also be run manually.
 
 New accounts always receive the `student` role. To grant administrator access, register the account normally, then promote that user's row through the Neon SQL editor using a trusted operator account:
 
@@ -33,9 +33,11 @@ UPDATE users SET role = 'admin' WHERE email = 'admin@your-college.edu';
 
 The user must sign in again after promotion to receive an admin JWT. Never expose database credentials or JWT secrets in the Android app.
 
+The app only requests internet access. Profile-photo selection uses Android's system picker and camera app; it does not require SMS, call-log, microphone, location, or broad storage permissions because CampusConnect has no feature that uses them.
+
 ## Render deployment
 
-Use the included `render.yaml` Blueprint or create a Render Web Service with **Root Directory** `backend`, **Build Command** `npm install`, and **Start Command** `npm start`. Set `DATABASE_URL` to the Neon connection string, then run `npm run migrate` from the backend shell once before using the service. Render's health check path is `/health`. The Blueprint generates a `JWT_SECRET`; set `CORS_ORIGINS` only for any browser clients.
+Use the included `render.yaml` Blueprint or create a Render Web Service with **Root Directory** `backend`, **Build Command** `npm install`, and **Start Command** `npm start`. Set `DATABASE_URL` to the Neon connection string. The service runs the repeatable schema migration automatically on startup. Render's health check path is `/health`. The Blueprint generates a `JWT_SECRET`; set `CORS_ORIGINS` only for any browser clients.
 
 The Android client uses HTTPS and does not need a browser CORS origin. Configure the actual Render service URL at build time as described below; this repository does not contain cloud account credentials, so it cannot create or claim a deployed Render service or provision a Neon database.
 
@@ -65,6 +67,7 @@ All routes except `GET /health`, registration, and login require `Authorization:
 | POST | `/api/auth/register` | Public | Register a student (`name`, `email`, `password`, `rollNumber`, `department`) |
 | POST | `/api/auth/login` | Public | Sign in (`email`, `password`) |
 | GET, PUT | `/api/students/profile` | Student/admin | View or update name, roll number, department |
+| PUT | `/api/students/profile/photo` | Student/admin | Set or clear a JPEG profile photo (`profilePhoto`, nullable data URL) |
 | GET | `/api/announcements` | Student/admin | List latest announcements first |
 | POST, PUT, DELETE | `/api/announcements[/:id]` | Admin | Create, update, and delete announcements |
 | GET | `/api/events` | Student/admin | List events and this user's registration state |
@@ -81,7 +84,7 @@ All routes except `GET /health`, registration, and login require `Authorization:
 
 ## Architecture and project demonstration
 
-The Android UI is composed in Material 3. `CampusViewModel` owns screen state and performs coroutine-based API operations; `ApiClient` configures Retrofit and attaches the session's encrypted JWT. The Express routes validate request bodies, hash passwords with bcrypt, verify JWTs, enforce admin roles, and use parameterized PostgreSQL statements. The schema defines foreign keys and unique constraints for email, roll numbers, event registrations, and per-student assignment status.
+The Android UI is composed in Material 3. `CampusViewModel` owns screen state and performs coroutine-based API operations; `ApiClient` configures Retrofit and attaches the session's encrypted JWT. Profile photos are resized/compressed on-device and stored with the user's PostgreSQL profile. The app uses Android's system photo picker and camera app for profile photos, so it does not need broad photo-library or storage access. The Express routes validate request bodies, hash passwords with bcrypt, verify JWTs, enforce admin roles, and use parameterized PostgreSQL statements. The schema defines foreign keys and unique constraints for email, roll numbers, event registrations, and per-student assignment status.
 
 For a demonstration, register a student, sign in, browse the live campus feed, register for an event, and mark an assignment complete. Promote a separate account to admin in Neon, sign in again, and use the Admin studio to publish announcements/events/assignments and inspect student accounts and event registrations.
 

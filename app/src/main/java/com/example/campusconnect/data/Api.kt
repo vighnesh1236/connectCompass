@@ -20,7 +20,8 @@ data class User(
     val email: String,
     val rollNumber: String?,
     val department: String?,
-    val role: String
+    val role: String,
+    val profilePhoto: String? = null
 )
 
 data class AuthResponse(val token: String, val user: User)
@@ -30,6 +31,7 @@ data class RegisterRequest(
     val rollNumber: String, val department: String
 )
 data class ProfileRequest(val name: String, val rollNumber: String, val department: String)
+data class ProfilePhotoRequest(val profilePhoto: String?)
 data class Announcement(
     val id: Int, val title: String, val description: String,
     val category: String, val createdAt: String
@@ -74,6 +76,9 @@ interface CampusApi {
 
     @PUT("api/students/profile")
     suspend fun updateProfile(@Body body: ProfileRequest): User
+
+    @PUT("api/students/profile/photo")
+    suspend fun updateProfilePhoto(@Body body: ProfilePhotoRequest): User
 
     @GET("api/announcements")
     suspend fun announcements(): List<Announcement>

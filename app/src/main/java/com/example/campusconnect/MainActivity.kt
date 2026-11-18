@@ -1,9 +1,18 @@
 package com.example.campusconnect
 
 import android.os.Bundle
+import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.net.Uri
+import android.util.Base64
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -22,17 +31,22 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.example.campusconnect.data.*
+import java.io.ByteArrayOutputStream
+import java.io.IOException
 import java.text.SimpleDateFormat
 import java.util.Locale
 
@@ -79,6 +93,31 @@ private enum class Tab(val title: String) {
 @Composable
 private fun CampusConnectApp(vm: CampusViewModel = viewModel()) {
     val state by vm.state.collectAsState()
+    val context = LocalContext.current
+    val photoPicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.PickVisualMedia()
+    ) { uri ->
+        if (uri != null) {
+            try {
+                vm.saveProfilePhoto(encodeProfilePhoto(context, uri))
+            } catch (_: IOException) {
+                vm.reportError("Couldn't open that photo. Please choose another image.")
+            } catch (_: IllegalArgumentException) {
+                vm.reportError("That photo couldn't be processed. Please choose another image.")
+            }
+        }
+    }
+    val camera = rememberLauncherForActivityResult(
+        ActivityResultContracts.TakePicturePreview()
+    ) { bitmap ->
+        if (bitmap != null) {
+            try {
+                vm.saveProfilePhoto(encodeProfilePhoto(bitmap))
+            } catch (_: IllegalArgumentException) {
+                vm.reportError("That photo couldn't be processed. Please take another photo.")
+            }
+        }
+    }
     val navController = rememberNavController()
     val currentEntry by navController.currentBackStackEntryAsState()
     val selectedTab = Tab.values().firstOrNull { it.name == currentEntry?.destination?.route } ?: Tab.HOME
@@ -156,7 +195,14 @@ private fun CampusConnectApp(vm: CampusViewModel = viewModel()) {
                 composable(Tab.PROFILE.name) {
                     ProfileScreen(
                         state, onEdit = { editingProfile = true },
-                        onAdmin = { adminOpen = true }, onLogout = vm::logout
+                        onAdmin = { adminOpen = true }, onLogout = vm::logout,
+                        onTakePhoto = { camera.launch(null) },
+                        onChoosePhoto = {
+                            photoPicker.launch(
+                                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                            )
+                        },
+                        onRemovePhoto = { vm.saveProfilePhoto(null) }
                     )
                 }
             }
@@ -331,10 +377,10 @@ private fun HomeScreen(state: CampusState, onNavigate: (Tab) -> Unit, onRefresh:
                 IconButton(onClick = onRefresh) {
                     Icon(Icons.Rounded.Refresh, "Refresh", tint = Navy)
                 }
-                Box(
-                    Modifier.size(42.dp).clip(CircleShape).background(Purple.copy(alpha = .12f)),
-                    contentAlignment = Alignment.Center
-                ) { Text((state.user?.name?.firstOrNull() ?: 'S').uppercase(), color = Purple, fontWeight = FontWeight.Bold) }
+                ProfileAvatar(
+                    state.user?.profilePhoto, (state.user?.name?.firstOrNull() ?: 'S').uppercase(),
+                    42.dp, Purple.copy(alpha = .12f), Purple
+                )
             }
         }
         item { DashboardHero(state.user?.department ?: "Your campus, connected.") }
@@ -477,8 +523,17 @@ private fun AssignmentsScreen(assignments: List<Assignment>, busy: Boolean, onCo
 }
 
 @Composable
-private fun ProfileScreen(state: CampusState, onEdit: () -> Unit, onAdmin: () -> Unit, onLogout: () -> Unit) {
+private fun ProfileScreen(
+    state: CampusState,
+    onEdit: () -> Unit,
+    onAdmin: () -> Unit,
+    onLogout: () -> Unit,
+    onTakePhoto: () -> Unit,
+    onChoosePhoto: () -> Unit,
+    onRemovePhoto: () -> Unit
+) {
     val user = state.user
+    var photoOptionsOpen by remember { mutableStateOf(false) }
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
@@ -490,14 +545,20 @@ private fun ProfileScreen(state: CampusState, onEdit: () -> Unit, onAdmin: () ->
                     .padding(22.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                Box(Modifier.size(76.dp).clip(CircleShape).background(Color.White.copy(alpha = .14f)), contentAlignment = Alignment.Center) {
-                    Text((user?.name?.firstOrNull() ?: 'S').uppercase(), color = Color.White, style = MaterialTheme.typography.headlineMedium)
-                }
+                ProfileAvatar(
+                    user?.profilePhoto, (user?.name?.firstOrNull() ?: 'S').uppercase(),
+                    76.dp, Color.White.copy(alpha = .14f), Color.White
+                )
                 Spacer(Modifier.height(12.dp))
                 Text(user?.name ?: "Student", color = Color.White, style = MaterialTheme.typography.titleLarge)
                 Text(user?.email ?: "", color = Color.White.copy(alpha = .75f))
                 Spacer(Modifier.height(9.dp))
                 StatusPill((user?.role ?: "student").uppercase(), Color.White.copy(alpha = .13f), Color.White)
+                TextButton(onClick = { photoOptionsOpen = true }) {
+                    Icon(Icons.Rounded.PhotoCamera, null, tint = Color.White)
+                    Spacer(Modifier.width(7.dp))
+                    Text(if (user?.profilePhoto == null) "Add profile photo" else "Change profile photo", color = Color.White)
+                }
             }
         }
         Card(shape = RoundedCornerShape(20.dp), colors = CardDefaults.cardColors(containerColor = Color.White)) {
@@ -524,6 +585,121 @@ private fun ProfileScreen(state: CampusState, onEdit: () -> Unit, onAdmin: () ->
             Text("Sign out", color = Color(0xFFB84555))
         }
     }
+    if (photoOptionsOpen) {
+        AlertDialog(
+            onDismissRequest = { photoOptionsOpen = false },
+            title = { Text("Profile photo") },
+            text = {
+                Column {
+                    TextButton(onClick = { photoOptionsOpen = false; onTakePhoto() }) {
+                        Icon(Icons.Rounded.PhotoCamera, null)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Take a photo")
+                    }
+                    TextButton(onClick = { photoOptionsOpen = false; onChoosePhoto() }) {
+                        Icon(Icons.Rounded.PhotoLibrary, null)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Choose from photos")
+                    }
+                    if (user?.profilePhoto != null) {
+                        TextButton(onClick = { photoOptionsOpen = false; onRemovePhoto() }) {
+                            Icon(Icons.Rounded.DeleteOutline, null, tint = MaterialTheme.colorScheme.error)
+                            Spacer(Modifier.width(8.dp))
+                            Text("Remove photo", color = MaterialTheme.colorScheme.error)
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { photoOptionsOpen = false }) { Text("Cancel") }
+            }
+        )
+    }
+}
+
+@Composable
+private fun ProfileAvatar(
+    photoData: String?,
+    fallback: String,
+    size: androidx.compose.ui.unit.Dp,
+    background: Color,
+    foreground: Color
+) {
+    val photo = remember(photoData) { decodeProfilePhoto(photoData) }
+    Box(
+        Modifier.size(size).clip(CircleShape).background(background),
+        contentAlignment = Alignment.Center
+    ) {
+        if (photo != null) {
+            Image(
+                bitmap = photo.asImageBitmap(),
+                contentDescription = "Profile photo",
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
+            )
+        } else {
+            Text(fallback, color = foreground, fontWeight = FontWeight.Bold)
+        }
+    }
+}
+
+private fun decodeProfilePhoto(photoData: String?): Bitmap? {
+    if (photoData.isNullOrBlank()) return null
+    return runCatching {
+        val encoded = photoData.substringAfter(',', missingDelimiterValue = "")
+        Base64.decode(encoded, Base64.DEFAULT).let { bytes ->
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+        }
+    }.getOrNull()
+}
+
+private fun encodeProfilePhoto(context: Context, uri: Uri): String {
+    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    context.contentResolver.openInputStream(uri)?.use {
+        BitmapFactory.decodeStream(it, null, bounds)
+    } ?: throw IOException("Unable to read selected image")
+    if (bounds.outWidth <= 0 || bounds.outHeight <= 0) throw IOException("Invalid image")
+    var sampleSize = 1
+    while (maxOf(bounds.outWidth, bounds.outHeight) / sampleSize > 2048) sampleSize *= 2
+    val options = BitmapFactory.Options().apply { inSampleSize = sampleSize }
+    val bitmap = context.contentResolver.openInputStream(uri)?.use {
+        BitmapFactory.decodeStream(it, null, options)
+    } ?: throw IOException("Unable to decode selected image")
+    return encodeProfilePhoto(bitmap)
+}
+
+private fun encodeProfilePhoto(bitmap: Bitmap): String {
+    var candidate = bitmap
+    val largestDimension = maxOf(bitmap.width, bitmap.height)
+    if (largestDimension > 1024) {
+        val scale = 1024f / largestDimension
+        candidate = Bitmap.createScaledBitmap(
+            bitmap, (bitmap.width * scale).toInt(), (bitmap.height * scale).toInt(), true
+        )
+    }
+    try {
+        repeat(4) {
+            for (quality in listOf(85, 75, 65, 55, 45)) {
+                val output = ByteArrayOutputStream()
+                if (!candidate.compress(Bitmap.CompressFormat.JPEG, quality, output)) {
+                    throw IllegalArgumentException("Unable to encode image")
+                }
+                val bytes = output.toByteArray()
+                if (bytes.size <= 480 * 1024) {
+                    return "data:image/jpeg;base64,${Base64.encodeToString(bytes, Base64.NO_WRAP)}"
+                }
+            }
+            val smaller = Bitmap.createScaledBitmap(
+                candidate, (candidate.width / 2).coerceAtLeast(1),
+                (candidate.height / 2).coerceAtLeast(1), true
+            )
+            if (candidate !== bitmap) candidate.recycle()
+            candidate = smaller
+        }
+    } finally {
+        if (candidate !== bitmap) candidate.recycle()
+    }
+    throw IllegalArgumentException("Image is too large")
 }
 
 @Composable

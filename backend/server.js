@@ -24,7 +24,7 @@ app.use(cors({
     return callback(new Error("Origin is not allowed by CORS"));
   },
 }));
-app.use(express.json({ limit: "100kb" }));
+app.use(express.json({ limit: "1mb" }));
 app.use("/api/auth", rateLimit({ windowMs: 15 * 60 * 1000, limit: 30 }));
 app.get("/health", async (_req, res, next) => {
   try {

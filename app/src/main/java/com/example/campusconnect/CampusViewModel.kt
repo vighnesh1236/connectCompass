@@ -104,6 +104,13 @@ class CampusViewModel : ViewModel() {
         update { copy(user = updated) }
     }
 
+    fun saveProfilePhoto(profilePhoto: String?) = perform("Profile photo updated") {
+        val updated = api.updateProfilePhoto(ProfilePhotoRequest(profilePhoto))
+        update { copy(user = updated) }
+    }
+
+    fun reportError(message: String) = update { copy(error = message) }
+
     fun saveAnnouncement(id: Int?, title: String, description: String, category: String) =
         perform("Announcement saved") {
             val body = CreateAnnouncement(title.trim(), description.trim(), category.trim())
