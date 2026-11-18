@@ -16,6 +16,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -193,6 +194,7 @@ private fun CampusConnectApp(
 ) {
     val state by vm.state.collectAsState()
     val context = LocalContext.current
+    var pendingPdfAssignmentId by remember { mutableIntStateOf(0) }
     var cameraPermissionDenied by remember { mutableStateOf(false) }
     var cameraPermanentlyDenied by remember { mutableStateOf(false) }
     val photoPicker = rememberLauncherForActivityResult(
@@ -205,6 +207,38 @@ private fun CampusConnectApp(
                 vm.reportError("Couldn't open that photo. Please choose another image.")
             } catch (_: IllegalArgumentException) {
                 vm.reportError("That photo couldn't be processed. Please choose another image.")
+            }
+        }
+    }
+    val assignmentPicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        val assignmentId = pendingPdfAssignmentId
+        pendingPdfAssignmentId = 0
+        if (uri != null && assignmentId > 0) {
+            try {
+                val bytes = context.contentResolver.openInputStream(uri)?.use { input ->
+                    val output = ByteArrayOutputStream()
+                    val buffer = ByteArray(8192)
+                    var total = 0
+                    while (true) {
+                        val count = input.read(buffer)
+                        if (count < 0) break
+                        total += count
+                        if (total > 10 * 1024 * 1024) throw IllegalArgumentException("PDF is too large")
+                        output.write(buffer, 0, count)
+                    }
+                    output.toByteArray()
+                } ?: throw IOException("Could not read the selected PDF")
+                val name = context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+                    val nameColumn = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                    if (cursor.moveToFirst() && nameColumn >= 0) cursor.getString(nameColumn) else null
+                } ?: "assignment.pdf"
+                vm.uploadAssignmentPdf(assignmentId, name, bytes)
+            } catch (_: IllegalArgumentException) {
+                vm.reportError("PDF must be 10 MB or smaller.")
+            } catch (_: IOException) {
+                vm.reportError("Couldn't read that PDF. Please choose another file.")
             }
         }
     }
@@ -292,10 +326,9 @@ private fun CampusConnectApp(
                     Tab.NOTICES to Icons.Rounded.Campaign,
                     Tab.EVENTS to Icons.Rounded.Event,
                     Tab.TASKS to Icons.Rounded.TaskAlt,
-                    Tab.PROFILE to Icons.Rounded.Person
                 ) + if (state.user?.role == "student") {
-                    listOf(Tab.MESSAGES to Icons.Rounded.Chat)
-                } else emptyList()
+                    listOf(Tab.MESSAGES to Icons.Rounded.Chat, Tab.PROFILE to Icons.Rounded.Person)
+                } else listOf(Tab.PROFILE to Icons.Rounded.Person)
                 items.forEach { (item, icon) ->
                     NavigationBarItem(
                         selected = selectedTab == item,
@@ -340,7 +373,34 @@ private fun CampusConnectApp(
                     }
                 }
                 composable(Tab.TASKS.name) {
-                    AssignmentsScreen(state.assignments, state.busy, vm::setAssignmentCompleted)
+                    AssignmentsScreen(
+                        state.assignments, state.exams, state.busy, vm::setAssignmentCompleted,
+                        onUpload = { assignmentId ->
+                            pendingPdfAssignmentId = assignmentId
+                            assignmentPicker.launch(arrayOf("application/pdf"))
+                        },
+                        onViewPdf = { assignmentId ->
+                            vm.downloadAssignmentPdf(assignmentId) { bytes ->
+                                try {
+                                    val file = java.io.File(context.cacheDir, "assignment-$assignmentId.pdf")
+                                    file.writeBytes(bytes)
+                                    val contentUri = FileProvider.getUriForFile(
+                                        context, "${context.packageName}.files", file
+                                    )
+                                    context.startActivity(
+                                        Intent(Intent.ACTION_VIEW).setDataAndType(contentUri, "application/pdf")
+                                            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                    )
+                                } catch (_: android.content.ActivityNotFoundException) {
+                                    vm.reportError("No PDF viewer is available on this phone.")
+                                } catch (_: IOException) {
+                                    vm.reportError("Couldn't save the downloaded PDF for viewing.")
+                                } catch (_: IllegalArgumentException) {
+                                    vm.reportError("Couldn't open this PDF.")
+                                }
+                            }
+                        }
+                    )
                 }
                 composable(Tab.MESSAGES.name) {
                     LaunchedEffect(Unit) { vm.loadMessages() }
@@ -720,18 +780,49 @@ private fun EventsScreen(
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         item { ScreenHeader("Campus events", "Find your next campus moment", onRefresh) }
         if (events.isEmpty()) item { EmptyCard("Nothing on the calendar yet", "New college events will appear here.", Icons.Rounded.Event) }
-        items(events, key = { it.id }) { event ->
-            EventCard(event, { onSelect(event) }) { onRegistration(event, !event.registered) }
+        events.groupBy { it.eventDate }.forEach { (date, datedEvents) ->
+            item(key = "event-date-$date") {
+                Text(prettyDate(date), color = Purple, style = MaterialTheme.typography.titleMedium)
+            }
+            items(datedEvents, key = { it.id }) { event ->
+                EventCard(event, { onSelect(event) }) { onRegistration(event, !event.registered) }
+            }
         }
     }
 }
 
 @Composable
-private fun AssignmentsScreen(assignments: List<Assignment>, busy: Boolean, onComplete: (Int, Boolean) -> Unit) {
+private fun AssignmentsScreen(
+    assignments: List<Assignment>,
+    exams: List<ExamSchedule>,
+    busy: Boolean,
+    onComplete: (Int, Boolean) -> Unit,
+    onUpload: (Int) -> Unit,
+    onViewPdf: (Int) -> Unit
+) {
     val pending = assignments.filter { it.status != "completed" }
     val completed = assignments.filter { it.status == "completed" }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(13.dp)) {
-        item { ScreenHeader("Assignments", "A clear view of what's due", null) }
+        item { ScreenHeader("Assignments & exams", "Deadlines and your branch exam calendar", null) }
+        item { Text("Exam calendar", style = MaterialTheme.typography.titleLarge) }
+        if (exams.isEmpty()) {
+            item {
+                EmptyCard(
+                    "Exam dates not published yet",
+                    "Your college admin can publish Mid Semester 1, Mid Semester 2, and Final Semester dates.",
+                    Icons.Rounded.Event
+                )
+            }
+        } else {
+            items(exams, key = { "exam-${it.id}" }) { exam ->
+                SimpleInfoCard(
+                    exam.examType,
+                    "${exam.department ?: "All B.Tech branches"} · ${prettyDate(exam.examDate)}",
+                    Icons.Rounded.Event
+                )
+            }
+        }
+        item { Text("Assignments by subject", style = MaterialTheme.typography.titleLarge) }
         item {
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 StatusPill("${pending.size} pending", Color(0xFFFFF1E0), Color(0xFFB87020))
@@ -740,12 +831,24 @@ private fun AssignmentsScreen(assignments: List<Assignment>, busy: Boolean, onCo
         }
         if (assignments.isEmpty()) item { EmptyCard("You're all caught up", "New assignments from faculty will show here.", Icons.Rounded.TaskAlt) }
         if (pending.isNotEmpty()) item { Text("To do", style = MaterialTheme.typography.titleLarge) }
-        items(pending, key = { "pending-${it.id}" }) { assignment ->
-            AssignmentCard(assignment, busy) { onComplete(assignment.id, assignment.status != "completed") }
+        pending.groupBy { it.subject }.forEach { (subject, subjectAssignments) ->
+            item(key = "pending-subject-$subject") { Text(subject, color = Purple, style = MaterialTheme.typography.titleMedium) }
+            items(subjectAssignments, key = { "pending-${it.id}" }) { assignment ->
+                AssignmentCard(
+                    assignment, busy, { onComplete(assignment.id, assignment.status != "completed") },
+                    { onUpload(assignment.id) }, { onViewPdf(assignment.id) }
+                )
+            }
         }
         if (completed.isNotEmpty()) item { Text("Completed", style = MaterialTheme.typography.titleLarge) }
-        items(completed, key = { "completed-${it.id}" }) { assignment ->
-            AssignmentCard(assignment, busy) { onComplete(assignment.id, assignment.status != "completed") }
+        completed.groupBy { it.subject }.forEach { (subject, subjectAssignments) ->
+            item(key = "completed-subject-$subject") { Text(subject, color = Purple, style = MaterialTheme.typography.titleMedium) }
+            items(subjectAssignments, key = { "completed-${it.id}" }) { assignment ->
+                AssignmentCard(
+                    assignment, busy, { onComplete(assignment.id, assignment.status != "completed") },
+                    { onUpload(assignment.id) }, { onViewPdf(assignment.id) }
+                )
+            }
         }
     }
 }
@@ -1182,7 +1285,29 @@ private fun AdminScreen(state: CampusState, vm: CampusViewModel, onClose: () -> 
             item { Text("Create and manage", style = MaterialTheme.typography.titleLarge) }
             item { AdminAction(Icons.Rounded.Campaign, "Announcement", "Share a campus update", Purple) { editor = AdminEditor.ANNOUNCEMENT } }
             item { AdminAction(Icons.Rounded.Event, "College event", "Put something on the calendar", Cyan) { editor = AdminEditor.EVENT } }
-            item { AdminAction(Icons.Rounded.Assignment, "Assignment", "Add work for your students", Color(0xFFEF9F55)) { editor = AdminEditor.ASSIGNMENT } }
+            item {
+                Text(
+                    "Event ideas: Sanskrit fest, campus fest, and hackathons. Add the college-confirmed date, time, and venue before saving.",
+                    color = Muted, style = MaterialTheme.typography.bodySmall
+                )
+            }
+            item {
+                AdminAction(Icons.Rounded.Code, "Hackathon", "Add a dated event", Cyan) {
+                    editor = AdminEditor.EVENT.copy(title = "Campus Hackathon", description = "Student innovation and coding event")
+                }
+            }
+            item {
+                AdminAction(Icons.Rounded.Celebration, "Sanskrit fest", "Add a dated event", Purple) {
+                    editor = AdminEditor.EVENT.copy(title = "Sanskrit Fest", description = "Campus cultural celebration")
+                }
+            }
+            item {
+                AdminAction(Icons.Rounded.Celebration, "Campus fest", "Add a dated event", Color(0xFFEF9F55)) {
+                    editor = AdminEditor.EVENT.copy(title = "Campus Fest", description = "College festival")
+                }
+            }
+            item { AdminAction(Icons.Rounded.EventAvailable, "Exam dates", "Publish branch-wise semester exams", Purple) { editor = AdminEditor.EXAM } }
+            item { AdminAction(Icons.Rounded.Assignment, "Assignment", "Add work for a B.Tech subject and branch", Color(0xFFEF9F55)) { editor = AdminEditor.ASSIGNMENT } }
             item { AdminAction(Icons.Rounded.Groups, "Registered students", "${state.students.size} student accounts", Purple) { studentsShowing = !studentsShowing } }
             if (studentsShowing) {
                 if (state.students.isEmpty()) item { EmptyCard("No students to show", "Student accounts appear here after registration.", Icons.Rounded.Groups) }
@@ -1212,12 +1337,26 @@ private fun AdminScreen(state: CampusState, vm: CampusViewModel, onClose: () -> 
                     )
                 }, onDelete = { vm.deleteEvent(event.id) })
             }
+            item { Text("Exam calendar", style = MaterialTheme.typography.titleLarge) }
+            items(state.exams, key = { "admin-exam-${it.id}" }) { exam ->
+                AdminManagedRow(
+                    exam.examType, "${exam.department ?: "All branches"} · ${prettyDate(exam.examDate)}",
+                    onEdit = {
+                        editor = AdminEditor.EXAM.copy(
+                            id = exam.id, title = exam.examType, extra = exam.department.orEmpty(),
+                            secondExtra = exam.examDate
+                        )
+                    },
+                    onDelete = { vm.deleteExam(exam.id) }
+                )
+            }
             item { Text("Assignments", style = MaterialTheme.typography.titleLarge) }
             items(state.assignments, key = { "admin-task-${it.id}" }) { assignment ->
                 AdminManagedRow(assignment.title, "${assignment.subject} · due ${prettyDate(assignment.deadline)}", onEdit = {
                     editor = AdminEditor.ASSIGNMENT.copy(
                         id = assignment.id, title = assignment.title, description = assignment.description,
-                        extra = assignment.subject, secondExtra = assignment.deadline
+                        extra = assignment.subject, secondExtra = assignment.deadline,
+                        thirdExtra = assignment.department.orEmpty()
                     )
                 }, onDelete = { vm.deleteAssignment(assignment.id) })
             }
@@ -1230,7 +1369,11 @@ private fun AdminScreen(state: CampusState, vm: CampusViewModel, onClose: () -> 
             when (updated.type) {
                 AdminEditor.ANNOUNCEMENT.type -> vm.saveAnnouncement(updated.id, updated.title, updated.description, updated.extra)
                 AdminEditor.EVENT.type -> vm.saveEvent(updated.id, updated.title, updated.description, updated.extra, updated.secondExtra, updated.thirdExtra)
-                else -> vm.saveAssignment(updated.id, updated.title, updated.extra, updated.description, updated.secondExtra)
+                AdminEditor.ASSIGNMENT.type -> vm.saveAssignment(
+                    updated.id, updated.title, updated.extra, updated.description,
+                    updated.secondExtra, updated.thirdExtra
+                )
+                else -> vm.saveExam(updated.id, updated.title, updated.extra, updated.secondExtra)
             }
             editor = null
         }
@@ -1250,6 +1393,7 @@ private data class AdminEditor(
         val ANNOUNCEMENT = AdminEditor("Announcement")
         val EVENT = AdminEditor("Event")
         val ASSIGNMENT = AdminEditor("Assignment")
+        val EXAM = AdminEditor("Exam date")
     }
 }
 
@@ -1261,9 +1405,12 @@ private fun AdminEditorDialog(editor: AdminEditor, onClose: () -> Unit, onSave: 
     var second by remember(editor) { mutableStateOf(editor.secondExtra) }
     var third by remember(editor) { mutableStateOf(editor.thirdExtra) }
     var validation by remember { mutableStateOf<String?>(null) }
+    var examTypeExpanded by remember { mutableStateOf(false) }
     val fields = when (editor.type) {
         "Announcement" -> listOf("Title", "Description", "Category")
         "Event" -> listOf("Title", "Description", "Date (YYYY-MM-DD)", "Time (HH:MM)", "Venue")
+        "Exam date" -> listOf("Exam type", "", "Branch (blank = all B.Tech)", "Date (YYYY-MM-DD)")
+        "Assignment" -> listOf("Title", "Description", "Subject", "Deadline (YYYY-MM-DD)", "Branch (blank = all)")
         else -> listOf("Title", "Description", "Subject", "Deadline (YYYY-MM-DD)")
     }
     AlertDialog(
@@ -1271,28 +1418,55 @@ private fun AdminEditorDialog(editor: AdminEditor, onClose: () -> Unit, onSave: 
         title = { Text("${if (editor.id == null) "New" else "Edit"} ${editor.type}") },
         text = {
             Column(Modifier.heightIn(max = 520.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                OutlinedTextField(title, { title = it }, label = { Text(fields[0]) }, singleLine = true)
-                OutlinedTextField(description, { description = it }, label = { Text(fields[1]) }, minLines = 3)
+                if (editor.type == "Exam date") {
+                    Box {
+                        OutlinedTextField(
+                            title, {}, Modifier.fillMaxWidth().clickable { examTypeExpanded = true },
+                            label = { Text(fields[0]) }, singleLine = true, readOnly = true
+                        )
+                        DropdownMenu(expanded = examTypeExpanded, onDismissRequest = { examTypeExpanded = false }) {
+                            listOf("Mid Semester 1", "Mid Semester 2", "Final Semester").forEach { examType ->
+                                DropdownMenuItem(
+                                    text = { Text(examType) },
+                                    onClick = { title = examType; examTypeExpanded = false }
+                                )
+                            }
+                        }
+                    }
+                } else {
+                    OutlinedTextField(title, { title = it }, label = { Text(fields[0]) }, singleLine = true)
+                }
+                if (editor.type != "Exam date") {
+                    OutlinedTextField(description, { description = it }, label = { Text(fields[1]) }, minLines = 3)
+                }
                 OutlinedTextField(extra, { extra = it }, label = { Text(fields[2]) }, singleLine = true)
-                if (editor.type == "Event" || editor.type == "Assignment") {
+                if (editor.type == "Event" || editor.type == "Assignment" || editor.type == "Exam date") {
                     OutlinedTextField(second, { second = it }, label = { Text(fields[3]) }, singleLine = true)
                 }
-                if (editor.type == "Event") {
+                if (editor.type == "Event" || editor.type == "Assignment") {
                     OutlinedTextField(third, { third = it }, label = { Text(fields[4]) }, singleLine = true)
                 }
                 validation?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
                 if (editor.type == "Event") Text("Use the date format YYYY-MM-DD, for example 2026-12-05.", color = Muted, style = MaterialTheme.typography.labelSmall)
                 if (editor.type == "Assignment") Text("Use the date format YYYY-MM-DD, for example 2026-12-05.", color = Muted, style = MaterialTheme.typography.labelSmall)
+                if (editor.type == "Exam date") {
+                    Text(
+                        "Enter the exact department name used in student profiles, or leave blank for all branches. Use date format YYYY-MM-DD.",
+                        color = Muted, style = MaterialTheme.typography.labelSmall
+                    )
+                }
+                if (editor.type == "Assignment") Text("Branch must match the department in student profiles; leave blank for all branches.", color = Muted, style = MaterialTheme.typography.labelSmall)
             }
         },
         confirmButton = {
             Button(onClick = {
                 val invalid = when {
                     title.trim().length < 3 -> "Title must have at least 3 characters."
-                    description.isBlank() -> "Description is required."
+                    editor.type != "Exam date" && description.isBlank() -> "Description is required."
                     editor.type == "Event" && (!validDate(extra) || third.isBlank()) -> "Enter a valid date and venue."
                     editor.type == "Assignment" && (!validDate(second) || extra.isBlank()) -> "Enter a subject and valid deadline."
-                    extra.isBlank() -> "Complete all fields."
+                    editor.type == "Exam date" && (title !in listOf("Mid Semester 1", "Mid Semester 2", "Final Semester") || !validDate(second)) -> "Choose a supported exam type and valid date."
+                    editor.type != "Exam date" && extra.isBlank() -> "Complete all fields."
                     else -> null
                 }
                 validation = invalid
@@ -1417,14 +1591,20 @@ private fun EventCard(event: CampusEvent, onClick: () -> Unit, onRegistration: (
                     onClick = onRegistration,
                     shape = RoundedCornerShape(12.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = if (event.registered) Color(0xFFE8F6F1) else Navy, contentColor = if (event.registered) Color(0xFF278666) else Color.White)
-                ) { Text(if (event.registered) "Registered" else "Join event") }
+                ) { Text(if (event.registered) "Joined" else "Join event") }
             }
         }
     }
 }
 
 @Composable
-private fun AssignmentCard(assignment: Assignment, busy: Boolean, onToggle: () -> Unit) {
+private fun AssignmentCard(
+    assignment: Assignment,
+    busy: Boolean,
+    onToggle: () -> Unit,
+    onUpload: () -> Unit,
+    onViewPdf: () -> Unit
+) {
     Card(shape = RoundedCornerShape(18.dp), colors = CardDefaults.cardColors(containerColor = SurfaceColor)) {
         Row(Modifier.fillMaxWidth().padding(15.dp), verticalAlignment = Alignment.CenterVertically) {
             Checkbox(
@@ -1439,6 +1619,18 @@ private fun AssignmentCard(assignment: Assignment, busy: Boolean, onToggle: () -
                 Text(assignment.description, color = Muted, maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall)
                 Spacer(Modifier.height(5.dp))
                 Text("Due ${prettyDate(assignment.deadline)}", color = if (assignment.status == "completed") Color(0xFF278666) else Color(0xFFB87020), style = MaterialTheme.typography.labelMedium)
+                assignment.department?.takeIf { it.isNotBlank() }?.let {
+                    Text("Branch: $it", color = Muted, style = MaterialTheme.typography.labelSmall)
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    TextButton(onClick = onUpload, enabled = !busy) {
+                        Text(if (assignment.hasSubmission) "Replace PDF" else "Upload PDF")
+                    }
+                    if (assignment.hasSubmission) {
+                        TextButton(onClick = onViewPdf) { Text("View PDF") }
+                    }
+                }
+                assignment.fileName?.let { Text(it, color = Muted, style = MaterialTheme.typography.labelSmall) }
             }
         }
     }

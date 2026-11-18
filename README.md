@@ -35,6 +35,8 @@ The user must sign in again after promotion to receive an admin JWT. Never expos
 
 The app requests internet access, camera access (only after the student chooses to take a photo), and Android's notification permission (after sign-in). Choosing an existing profile photo uses Android's system photo picker and does not request broad storage access. Private in-app student messaging does not read or send SMS or place calls, so the app does not request call or SMS permissions.
 
+Students can attach one PDF (up to 10 MB) to each assignment. Android's system document picker grants access only to the selected file; no broad media/storage permission is needed. PDFs are stored in PostgreSQL and can be replaced or opened from the assignment card. Admins can target assignments and exam dates to a department, or leave the department blank to publish to all branches. Enter the official college exam calendar and branch-specific subjects in Admin studio; these vary by university, so the app does not invent dates or claim a universal B.Tech subject list. Admins can create dated and timed Sanskrit/campus-fest or hackathon events in the event calendar.
+
 ## Render deployment
 
 Use the included `render.yaml` Blueprint or create a Render Web Service with **Root Directory** `backend`, **Build Command** `npm install`, and **Start Command** `npm start`. Set `DATABASE_URL` to the Neon connection string. The service runs the repeatable schema migration automatically on startup. Render's health check path is `/health`. The Blueprint generates a `JWT_SECRET`; set `CORS_ORIGINS` only for any browser clients.
@@ -85,8 +87,13 @@ All routes except `GET /health`, registration, and login require `Authorization:
 | GET | `/api/events/my-registrations` | Student/admin | List the signed-in user's registrations |
 | POST, PUT, DELETE | `/api/events[/:id]` | Admin | Create, update, and delete events |
 | GET | `/api/assignments` | Student/admin | List assignments with this user's status |
+| POST | `/api/assignments/:id/submission` | Student/admin | Upload or replace a PDF assignment submission (multipart `file`, max 10 MB) |
+| GET | `/api/assignments/:id/submission` | Owner only | View/download the signed-in student's PDF submission |
 | PUT | `/api/assignments/:id/status` | Student/admin | Set status to `pending` or `completed` |
 | POST, PUT, DELETE | `/api/assignments[/:id]` | Admin | Create, update, and delete assignments |
+| GET | `/api/exams` | Student/admin | List exam dates for the student's department and all-branch dates |
+| GET | `/api/admin/exams` | Admin | List all configured exam dates |
+| POST, PUT, DELETE | `/api/admin/exams[/:id]` | Admin | Manage Mid Semester 1, Mid Semester 2, and Final Semester dates by department |
 | GET | `/api/admin/students` | Admin | List student accounts |
 | GET | `/api/admin/events/registrations` | Admin | List event registrations and student details |
 | GET | `/api/admin/dashboard` | Admin | Summary counts |

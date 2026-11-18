@@ -5,6 +5,8 @@ import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import okhttp3.Interceptor
 import okhttp3.OkHttpClient
+import okhttp3.MultipartBody
+import okhttp3.ResponseBody
 import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
 import retrofit2.http.Body
@@ -12,6 +14,8 @@ import retrofit2.http.DELETE
 import retrofit2.http.GET
 import retrofit2.http.POST
 import retrofit2.http.PUT
+import retrofit2.http.Multipart
+import retrofit2.http.Part
 import retrofit2.http.Path
 
 data class User(
@@ -62,16 +66,23 @@ data class CampusEvent(
 data class Assignment(
     val id: Int, val title: String, val subject: String,
     val description: String, val deadline: String,
-    val status: String = "pending"
+    val status: String = "pending",
+    val department: String? = null,
+    val hasSubmission: Boolean = false,
+    val fileName: String? = null
 )
+data class ExamSchedule(val id: Int, val department: String?, val examType: String, val examDate: String)
+data class AssignmentSubmission(val id: Int, val fileName: String, val uploadedAt: String)
 data class CreateAnnouncement(val title: String, val description: String, val category: String)
 data class CreateEvent(
     val title: String, val description: String, val eventDate: String,
     val eventTime: String, val venue: String
 )
 data class CreateAssignment(
-    val title: String, val subject: String, val description: String, val deadline: String
+    val title: String, val subject: String, val description: String, val deadline: String,
+    val department: String = ""
 )
+data class ExamRequest(val department: String = "", val examType: String, val examDate: String)
 data class ApiError(val message: String?)
 data class IdResponse(val id: Int)
 data class EventRegistration(
@@ -161,6 +172,28 @@ interface CampusApi {
 
     @PUT("api/assignments/{id}/status")
     suspend fun updateAssignmentStatus(@Path("id") id: Int, @Body body: Map<String, String>)
+
+    @Multipart
+    @POST("api/assignments/{id}/submission")
+    suspend fun uploadAssignmentPdf(@Path("id") id: Int, @Part file: MultipartBody.Part): AssignmentSubmission
+
+    @GET("api/assignments/{id}/submission")
+    suspend fun assignmentPdf(@Path("id") id: Int): ResponseBody
+
+    @GET("api/exams")
+    suspend fun exams(): List<ExamSchedule>
+
+    @GET("api/admin/exams")
+    suspend fun adminExams(): List<ExamSchedule>
+
+    @POST("api/admin/exams")
+    suspend fun createExam(@Body body: ExamRequest): ExamSchedule
+
+    @PUT("api/admin/exams/{id}")
+    suspend fun updateExam(@Path("id") id: Int, @Body body: ExamRequest): ExamSchedule
+
+    @DELETE("api/admin/exams/{id}")
+    suspend fun deleteExam(@Path("id") id: Int)
 
     @GET("api/admin/students")
     suspend fun students(): List<User>

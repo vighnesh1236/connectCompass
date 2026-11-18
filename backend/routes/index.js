@@ -2,12 +2,20 @@ const express = require("express");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const { z } = require("zod");
+const multer = require("multer");
 const pool = require("../config/database");
 const { notifyUser } = require("../services/realtime");
 const { authenticate, requireAdmin } = require("../middleware/auth");
 const validate = require("../middleware/validate");
 
 const router = express.Router();
+const assignmentPdfUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024, files: 1 },
+  fileFilter(_req, file, callback) {
+    callback(null, file.mimetype === "application/pdf");
+  },
+});
 const registrationSchema = z.object({
   name: z.string().trim().min(2).max(120),
   email: z.string().trim().email().max(254),
@@ -36,6 +44,12 @@ const assignmentSchema = z.object({
   subject: z.string().trim().min(1).max(120),
   description: z.string().trim().min(1).max(10000),
   deadline: z.string().date(),
+  department: z.string().trim().max(120).optional().default(""),
+});
+const examSchema = z.object({
+  department: z.string().trim().max(120).optional().default(""),
+  examType: z.enum(["Mid Semester 1", "Mid Semester 2", "Final Semester"]),
+  examDate: z.string().date(),
 });
 const profileSchema = z.object({
   name: z.string().trim().min(2).max(120),
@@ -409,9 +423,13 @@ router.delete("/events/:id/register", authenticate, asyncRoute(async (req, res) 
 router.get("/assignments", authenticate, asyncRoute(async (req, res) => {
   const { rows } = await pool.query(
     `SELECT a.id, a.title, a.subject, a.description, a.deadline::text AS deadline,
-       COALESCE(s.status, 'pending') AS status
+       COALESCE(s.status, 'pending') AS status, a.department,
+       sub.id IS NOT NULL AS "hasSubmission", sub.file_name AS "fileName"
      FROM assignments a
+     JOIN users u ON u.id = $1
      LEFT JOIN assignment_status s ON s.assignment_id = a.id AND s.user_id = $1
+     LEFT JOIN assignment_submissions sub ON sub.assignment_id = a.id AND sub.user_id = $1
+     WHERE a.department IS NULL OR a.department = '' OR LOWER(a.department) = LOWER(u.department)
      ORDER BY a.deadline ASC`,
     [req.user.id]
   );
@@ -420,24 +438,25 @@ router.get("/assignments", authenticate, asyncRoute(async (req, res) => {
 
 router.post("/assignments", authenticate, requireAdmin, validate(assignmentSchema),
   asyncRoute(async (req, res) => {
-    const { title, subject, description, deadline } = req.validatedBody;
+    const { title, subject, description, deadline, department } = req.validatedBody;
     const { rows } = await pool.query(
-      `INSERT INTO assignments (title, subject, description, deadline)
-       VALUES ($1, $2, $3, $4)
-       RETURNING id, title, subject, description, deadline::text AS deadline`,
-      [title, subject, description, deadline]
+      `INSERT INTO assignments (title, subject, description, deadline, department)
+       VALUES ($1, $2, $3, $4, NULLIF($5, ''))
+       RETURNING id, title, subject, description, deadline::text AS deadline, department`,
+      [title, subject, description, deadline, department]
     );
     res.status(201).json({ ...rows[0], status: "pending" });
   }));
 
 router.put("/assignments/:id", authenticate, requireAdmin, validate(assignmentSchema),
   asyncRoute(async (req, res) => {
-    const { title, subject, description, deadline } = req.validatedBody;
+    const { title, subject, description, deadline, department } = req.validatedBody;
     const { rows } = await pool.query(
-      `UPDATE assignments SET title = $1, subject = $2, description = $3, deadline = $4
-       WHERE id = $5
-       RETURNING id, title, subject, description, deadline::text AS deadline`,
-      [title, subject, description, deadline, req.params.id]
+      `UPDATE assignments SET title = $1, subject = $2, description = $3, deadline = $4,
+       department = NULLIF($5, '')
+       WHERE id = $6
+       RETURNING id, title, subject, description, deadline::text AS deadline, department`,
+      [title, subject, description, deadline, department, req.params.id]
     );
     if (!rows[0]) return res.status(404).json({ message: "Assignment not found" });
     res.json({ ...rows[0], status: "pending" });
@@ -470,6 +489,106 @@ router.put("/assignments/:id/status", authenticate,
       throw error;
     }
   }));
+
+router.post("/assignments/:id/submission", authenticate, (req, res, next) => {
+  assignmentPdfUpload.single("file")(req, res, (error) => {
+    if (error instanceof multer.MulterError) {
+      return res.status(error.code === "LIMIT_FILE_SIZE" ? 413 : 400)
+        .json({ message: error.code === "LIMIT_FILE_SIZE" ? "PDF must be 10 MB or smaller" : "Choose one PDF file" });
+    }
+    if (error) return next(error);
+    next();
+  });
+}, asyncRoute(async (req, res) => {
+  const file = req.file;
+  if (!file) return res.status(400).json({ message: "Choose a PDF file to upload" });
+  if (file.buffer.subarray(0, 5).toString("ascii") !== "%PDF-") {
+    return res.status(400).json({ message: "The selected file is not a valid PDF" });
+  }
+  const assignmentId = Number(req.params.id);
+  const { rows: assignment } = await pool.query(
+    `SELECT a.id FROM assignments a JOIN users u ON u.id = $2
+     WHERE a.id = $1
+       AND (a.department IS NULL OR a.department = '' OR LOWER(a.department) = LOWER(u.department))`,
+    [assignmentId, req.user.id]
+  );
+  if (!assignment[0]) return res.status(404).json({ message: "Assignment not found for your branch" });
+  const fileName = file.originalname.replace(/[^\w.-]/g, "_").slice(0, 255) || "assignment.pdf";
+  const { rows } = await pool.query(
+    `INSERT INTO assignment_submissions (user_id, assignment_id, file_name, file_data)
+     VALUES ($1, $2, $3, $4)
+     ON CONFLICT (user_id, assignment_id) DO UPDATE
+       SET file_name = EXCLUDED.file_name, file_data = EXCLUDED.file_data, uploaded_at = NOW()
+     RETURNING id, file_name AS "fileName", uploaded_at AS "uploadedAt"`,
+    [req.user.id, assignmentId, fileName, file.buffer]
+  );
+  res.status(201).json(rows[0]);
+}));
+
+router.get("/assignments/:id/submission", authenticate, asyncRoute(async (req, res) => {
+  const { rows } = await pool.query(
+    `SELECT s.file_name AS "fileName", s.file_data AS "fileData"
+     FROM assignment_submissions s
+     JOIN assignments a ON a.id = s.assignment_id
+     JOIN users u ON u.id = s.user_id
+     WHERE s.user_id = $1 AND s.assignment_id = $2
+       AND (a.department IS NULL OR a.department = '' OR LOWER(a.department) = LOWER(u.department))`,
+    [req.user.id, req.params.id]
+  );
+  if (!rows[0]) return res.status(404).json({ message: "No PDF has been uploaded for this assignment" });
+  res.type("application/pdf");
+  res.set("Content-Disposition", `inline; filename="${rows[0].fileName.replace(/["\\]/g, "_")}"`);
+  res.send(rows[0].fileData);
+}));
+
+router.get("/exams", authenticate, asyncRoute(async (req, res) => {
+  const { rows } = await pool.query(
+    `SELECT e.id, e.department, e.exam_type AS "examType", e.exam_date::text AS "examDate"
+     FROM exam_schedule e
+     JOIN users u ON u.id = $1
+     WHERE e.department IS NULL OR e.department = '' OR LOWER(e.department) = LOWER(u.department)
+     ORDER BY exam_date, exam_type`,
+    [req.user.id]
+  );
+  res.json(rows);
+}));
+
+router.get("/admin/exams", authenticate, requireAdmin, asyncRoute(async (_req, res) => {
+  const { rows } = await pool.query(
+    `SELECT id, department, exam_type AS "examType", exam_date::text AS "examDate"
+     FROM exam_schedule ORDER BY exam_date, exam_type`
+  );
+  res.json(rows);
+}));
+
+router.post("/admin/exams", authenticate, requireAdmin, validate(examSchema), asyncRoute(async (req, res) => {
+  const { department, examType, examDate } = req.validatedBody;
+  const { rows } = await pool.query(
+    `INSERT INTO exam_schedule (department, exam_type, exam_date)
+     VALUES (NULLIF($1, ''), $2, $3)
+     RETURNING id, department, exam_type AS "examType", exam_date::text AS "examDate"`,
+    [department, examType, examDate]
+  );
+  res.status(201).json(rows[0]);
+}));
+
+router.put("/admin/exams/:id", authenticate, requireAdmin, validate(examSchema), asyncRoute(async (req, res) => {
+  const { department, examType, examDate } = req.validatedBody;
+  const { rows } = await pool.query(
+    `UPDATE exam_schedule SET department = NULLIF($1, ''), exam_type = $2, exam_date = $3
+     WHERE id = $4
+     RETURNING id, department, exam_type AS "examType", exam_date::text AS "examDate"`,
+    [department, examType, examDate, req.params.id]
+  );
+  if (!rows[0]) return res.status(404).json({ message: "Exam date not found" });
+  res.json(rows[0]);
+}));
+
+router.delete("/admin/exams/:id", authenticate, requireAdmin, asyncRoute(async (req, res) => {
+  const result = await pool.query("DELETE FROM exam_schedule WHERE id = $1", [req.params.id]);
+  if (!result.rowCount) return res.status(404).json({ message: "Exam date not found" });
+  res.status(204).end();
+}));
 
 router.get("/admin/students", authenticate, requireAdmin, asyncRoute(async (_req, res) => {
   const { rows } = await pool.query(

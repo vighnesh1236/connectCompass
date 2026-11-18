@@ -6,12 +6,15 @@ import com.vighnesh1236.campusconnect.data.*
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.asStateFlow
 import retrofit2.HttpException
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.RequestBody.Companion.toRequestBody
 
 data class CampusState(
     val user: User? = null,
     val announcements: List<Announcement> = emptyList(),
     val events: List<CampusEvent> = emptyList(),
     val assignments: List<Assignment> = emptyList(),
+    val exams: List<ExamSchedule> = emptyList(),
     val students: List<User> = emptyList(),
     val eventRegistrations: List<EventRegistration> = emptyList(),
     val conversations: List<DirectConversation> = emptyList(),
@@ -74,6 +77,7 @@ class CampusViewModel : ViewModel() {
                 val announcements = api.announcements()
                 val events = api.events()
                 val assignments = api.assignments()
+                val exams = if (profile.role == "admin") api.adminExams() else api.exams()
                 val students = if (profile.role == "admin") runCatching { api.students() }.getOrElse { emptyList() } else emptyList()
                 val registrations = if (profile.role == "admin") {
                     runCatching { api.eventRegistrations() }.getOrElse { emptyList() }
@@ -81,7 +85,7 @@ class CampusViewModel : ViewModel() {
                 update {
                     copy(
                         user = profile, announcements = announcements,
-                        events = events, assignments = assignments, students = students,
+                        events = events, assignments = assignments, exams = exams, students = students,
                         eventRegistrations = registrations, busy = false, restoringSession = false
                     )
                 }
@@ -104,6 +108,7 @@ class CampusViewModel : ViewModel() {
     fun setEventRegistered(event: CampusEvent, registered: Boolean) =
         perform(if (registered) "You're registered for ${event.title}" else "Registration cancelled") {
             if (registered) api.registerForEvent(event.id) else api.cancelEventRegistration(event.id)
+            update { copy(events = events.map { if (it.id == event.id) it.copy(registered = registered) else it }) }
             refresh()
         }
 
@@ -234,6 +239,44 @@ class CampusViewModel : ViewModel() {
             if (id == null) api.createAssignment(body) else api.updateAssignment(id, body)
             refresh()
         }
+
+    fun saveAssignment(
+        id: Int?, title: String, subject: String, description: String, deadline: String, department: String
+    ) = perform("Assignment saved") {
+        val body = CreateAssignment(title.trim(), subject.trim(), description.trim(), deadline.trim(), department.trim())
+        if (id == null) api.createAssignment(body) else api.updateAssignment(id, body)
+        refresh()
+    }
+
+    fun saveExam(id: Int?, examType: String, department: String, examDate: String) =
+        perform("Exam date saved") {
+            val body = ExamRequest(department.trim(), examType, examDate.trim())
+            if (id == null) api.createExam(body) else api.updateExam(id, body)
+            refresh()
+        }
+
+    fun deleteExam(id: Int) = perform("Exam date removed") {
+        api.deleteExam(id)
+        refresh()
+    }
+
+    fun uploadAssignmentPdf(id: Int, fileName: String, bytes: ByteArray) = perform("Assignment PDF uploaded") {
+        val requestBody = bytes.toRequestBody("application/pdf".toMediaType())
+        val part = okhttp3.MultipartBody.Part.createFormData("file", fileName, requestBody)
+        api.uploadAssignmentPdf(id, part)
+        val assignments = api.assignments()
+        update { copy(assignments = assignments) }
+    }
+
+    fun downloadAssignmentPdf(id: Int, onDownloaded: (ByteArray) -> Unit) {
+        viewModelScope.launch {
+            try {
+                onDownloaded(api.assignmentPdf(id).bytes())
+            } catch (error: Exception) {
+                update { copy(error = errorMessage(error)) }
+            }
+        }
+    }
 
     fun deleteAssignment(id: Int) = perform("Assignment removed") {
         api.deleteAssignment(id)
