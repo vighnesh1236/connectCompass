@@ -1,4 +1,4 @@
-package com.example.campusconnect.data
+package com.vighnesh1236.campusconnect.data
 
 import android.content.Context
 import androidx.security.crypto.EncryptedSharedPreferences
@@ -175,7 +175,7 @@ object ApiClient {
         }
         val client = OkHttpClient.Builder().addInterceptor(authInterceptor).build()
         return Retrofit.Builder()
-            .baseUrl(com.example.campusconnect.BuildConfig.API_BASE_URL)
+            .baseUrl(com.vighnesh1236.campusconnect.BuildConfig.API_BASE_URL)
             .client(client)
             .addConverterFactory(GsonConverterFactory.create())
             .build()

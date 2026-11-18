@@ -1,4 +1,4 @@
-package com.example.campusconnect
+package com.vighnesh1236.campusconnect
 
 import android.os.Bundle
 import android.content.Context
@@ -44,7 +44,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
-import com.example.campusconnect.data.*
+import com.vighnesh1236.campusconnect.data.*
 import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.text.SimpleDateFormat

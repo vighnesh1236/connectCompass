@@ -1,4 +1,4 @@
-package com.example.campusconnect
+package com.vighnesh1236.campusconnect
 
 import org.junit.Test
 

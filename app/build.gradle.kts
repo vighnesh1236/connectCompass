@@ -4,13 +4,13 @@ plugins {
 }
 
 android {
-    namespace = "com.example.campusconnect"
+    namespace = "com.vighnesh1236.campusconnect"
     compileSdk {
         version = release(37)
     }
 
     defaultConfig {
-        applicationId = "com.example.campusconnect"
+        applicationId = "com.vighnesh1236.campusconnect"
         minSdk = 24
         targetSdk = 37
         versionCode = 1

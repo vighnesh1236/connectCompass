@@ -1,8 +1,8 @@
-package com.example.campusconnect
+package com.vighnesh1236.campusconnect
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.example.campusconnect.data.*
+import com.vighnesh1236.campusconnect.data.*
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.asStateFlow
 import retrofit2.HttpException
